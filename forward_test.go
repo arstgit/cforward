@@ -226,12 +226,64 @@ func TestRunCfstRelativePath(t *testing.T) {
 
 	// 复现部署形态：以 temp 目录为 cwd，传相对路径
 	t.Chdir(dir)
-	results, err := RunCfst(context.Background(), "./cfst", "./cfst/cfst", "https://speed.cloudflare.com/__down?bytes=3000000")
+	results, err := RunCfst(context.Background(), "./cfst", "./cfst/cfst", CfstOpts{
+		URL:     "https://speed.cloudflare.com/__down?bytes=3000000",
+		Threads: 100, Tests: 2, DLCount: 10, DLTime: 10, Top: 20,
+	})
 	if err != nil {
 		t.Fatalf("RunCfst with relative paths failed: %v", err)
 	}
 	if len(results) != 1 || results[0].IP != "104.16.1.34" {
 		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
+// 配置加载：JSON 文件 + 默认值合并
+func TestLoadConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	content := `{
+		"listen": ":9999",
+		"pool_min": 50,
+		"cooldown": "10m",
+		"cfst_threads": 200,
+		"cfst_dl_time": 20,
+		"debug": true
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 显式配置生效
+	if cfg.Listen != ":9999" || cfg.PoolMin != 50 || cfg.CfstThreads != 200 || !cfg.Debug {
+		t.Fatalf("explicit fields: %+v", cfg)
+	}
+	// 时长字符串解析
+	if cfg.Cooldown.Std() != 10*time.Minute {
+		t.Fatalf("cooldown: %v", cfg.Cooldown.Std())
+	}
+	// 未配置字段保持默认
+	if cfg.PoolMax != 200 || cfg.CfstTop != 20 || cfg.NoDataTimeout.Std() != 10*time.Second {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+}
+
+func TestFindArg(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-listen", ":9", "-config", "a.json"}, "a.json"},
+		{[]string{"-config=a.json", "-listen", ":9"}, "a.json"},
+		{[]string{"--config", "b.json"}, "b.json"},
+		{[]string{"-listen", ":9"}, ""},
+	}
+	for _, c := range cases {
+		if got := findArg(c.args, "config"); got != c.want {
+			t.Fatalf("findArg(%v) = %q, want %q", c.args, got, c.want)
+		}
 	}
 }
 

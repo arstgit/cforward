@@ -20,9 +20,8 @@ const (
 // 启动即跑；池内 IP < poolMin 或最高分 < scoreFloorTrigger 时补池；
 // 一轮完成后不足则至少冷却 cooldown 再补；正在跑时不重复触发。
 type Scheduler struct {
-	pool    *Pool
-	cfg     Config
-	cfstDir string
+	pool *Pool
+	cfg  Config
 
 	mu      sync.Mutex
 	running bool
@@ -55,7 +54,7 @@ func (s *Scheduler) wake() {
 
 // needRefill 是否满足补池条件（不加锁，评估时读快照）。
 func (s *Scheduler) needRefill() bool {
-	if s.pool.Size() < s.cfg.poolMin {
+	if s.pool.Size() < s.cfg.PoolMin {
 		return true
 	}
 	return s.pool.BestScore() < scoreFloorTrigger
@@ -67,7 +66,7 @@ func (s *Scheduler) eval() {
 		s.mu.Unlock()
 		return
 	}
-	if time.Since(s.lastRun) < s.cfg.cooldown {
+	if time.Since(s.lastRun) < s.cfg.Cooldown.Std() {
 		s.mu.Unlock()
 		return
 	}
@@ -87,8 +86,16 @@ func (s *Scheduler) runOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), cfstMaxDuration)
 	defer cancel()
 
-	slog.Info("cfst round starting", "dir", s.cfstDir)
-	results, err := RunCfst(ctx, s.cfstDir, s.cfg.cfstPath, s.cfg.cfstURL)
+	slog.Info("cfst round starting", "dir", s.cfg.CfstDir)
+	opts := CfstOpts{
+		URL:     s.cfg.CfstURL,
+		Threads: s.cfg.CfstThreads,
+		Tests:   s.cfg.CfstTests,
+		DLCount: s.cfg.CfstDLCount,
+		DLTime:  s.cfg.CfstDLTime,
+		Top:     s.cfg.CfstTop,
+	}
+	results, err := RunCfst(ctx, s.cfg.CfstDir, s.cfg.CfstPath, opts)
 
 	s.mu.Lock()
 	s.running = false

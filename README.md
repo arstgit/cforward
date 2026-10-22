@@ -18,10 +18,47 @@ go build -o cfstnat .
 首次启动会自动执行 cfst 建池（约 1-2 分钟）；期间到达的客户端连接会被拒绝。
 池子持久化在 `pool.json`，重启后无需等待第一轮 cfst 即可转发。
 
+### 配置
+
+所有配置项都支持 **命令行 flag** 或 **JSON 配置文件**（`-config`），优先级：
+命令行 flag > 配置文件 > 默认值。
+
+```sh
+./cfstnat -config config.json
+# 或混合：配置文件为主，个别项用 flag 覆盖
+./cfstnat -config config.json -pool-min 50 -debug
+```
+
+配置文件示例（`config.example.json`，缺省字段用默认值）：
+
+```json
+{
+  "listen": ":1234",
+  "target_port": 443,
+  "cfst_dir": "./cfst",
+  "pool_file": "pool.json",
+  "pool_min": 100,
+  "pool_max": 200,
+  "cooldown": "5m",
+  "fail_evict": 5,
+  "dial_timeout": "3s",
+  "no_data_timeout": "10s",
+  "cfst_url": "https://speed.cloudflare.com/__down?bytes=3000000",
+  "cfst_threads": 100,
+  "cfst_tests": 2,
+  "cfst_dl_count": 10,
+  "cfst_dl_time": 10,
+  "cfst_top": 20,
+  "status_interval": "60s",
+  "debug": false
+}
+```
+
 ### 参数
 
 | Flag | 默认 | 说明 |
 |---|---|---|
+| `-config` | | JSON 配置文件路径（命令行 flag 优先级更高） |
 | `-listen` | `:1234` | 监听地址 |
 | `-cfst-dir` | `./cfst` | cfst 工作目录（含 ip.txt / ipv6.txt） |
 | `-cfst-path` | `<cfst-dir>/cfst` | cfst 可执行文件路径 |
@@ -34,6 +71,12 @@ go build -o cfstnat .
 | `-dial-timeout` | `3s` | 拨号超时 |
 | `-no-data-timeout` | `10s` | 路径死亡判定时长（TCP_USER_TIMEOUT） |
 | `-cfst-url` | `https://speed.cloudflare.com/__down?bytes=3000000` | cfst 下载测速地址 |
+| `-cfst-threads` | `100` | cfst 延迟测速线程数 (`-n`) |
+| `-cfst-tests` | `2` | cfst 每 IP 测速次数 (`-t`) |
+| `-cfst-dl-count` | `10` | cfst 下载测速数量 (`-dn`) |
+| `-cfst-dl-time` | `10` | cfst 单 IP 下载测速时长上限秒 (`-dt`) |
+| `-cfst-top` | `20` | cfst 结果入池数量 (`-p`) |
+| `-status-interval` | `60s` | 状态块打印间隔 |
 | `-debug` | `false` | debug 日志 |
 
 ## 行为
@@ -73,6 +116,13 @@ cfst 参数：`-n 100 -t 2 -dn 10 -dt 10 -p 20 -tlr 0 -o ""`（前 20 名入池�
 
 ## 日志
 
-- `slog`，默认 info 级别，`-debug` 开 debug
-- 关键事件：cfst 轮次摘要、入池/淘汰、上游切换（含切换次数）、拒绝连接
-- 每 60s 打印一次池子 Top5（IP、分数、延迟、速度）+ 活跃连接数
+- 关键事件用 `slog` 输出（默认 info 级别，`-debug` 开 debug）
+- 每 `-status-interval`（默认 60s）打印一次**状态块**：池子大小/水位、活跃连接数、Top10 表格（分数/延迟/速度）
+
+```
+── cfstnat 状态 ────────────────────────────────
+  pool: 20 IPs (min 100 / max 200)    活跃连接: 18
+  #    IP                    分数      延迟           速度
+  1    172.64.229.241       69.7     72ms    1.8MB/s
+  2    104.18.32.170        69.3     80ms    1.7MB/s
+```

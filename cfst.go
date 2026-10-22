@@ -14,16 +14,27 @@ import (
 	"time"
 )
 
-// cfst 固定参数（算法/性能相关，编译期常量）。
-// 注意 -tlr 0：让 cfst 自己过滤掉任何丢包的 IP（丢包 >0 的 IP 不输出）。
-var cfstArgs = []string{
-	"-n", "100", // 延迟测速线程
-	"-t", "2", // 每 IP 测速次数
-	"-dn", "10", // 下载测速数量
-	"-dt", "10", // 下载测速时长上限
-	"-p", "20", // 显示结果数 = 入池数
-	"-tlr", "0", // 丢包率上限 0：只保留零丢包 IP
-	"-o", "", // 不写 result.csv，从 stdout 解析
+// CfstOpts cfst 运行参数（可配置部分；-tlr 0 丢包过滤与 -o "" stdout 输出是语义要求，固定）。
+type CfstOpts struct {
+	URL     string
+	Threads int // -n
+	Tests   int // -t
+	DLCount int // -dn
+	DLTime  int // -dt
+	Top     int // -p 入池数量
+}
+
+func cfstArgs(o CfstOpts) []string {
+	return []string{
+		"-n", strconv.Itoa(o.Threads),
+		"-t", strconv.Itoa(o.Tests),
+		"-dn", strconv.Itoa(o.DLCount),
+		"-dt", strconv.Itoa(o.DLTime),
+		"-p", strconv.Itoa(o.Top),
+		"-tlr", "0", // 丢包率上限 0：只保留零丢包 IP
+		"-o", "", // 不写 result.csv，从 stdout 解析
+		"-url", o.URL,
+	}
 }
 
 // 结果行：行首是 IPv4，后跟 已发送 已接收 丢包率 平均延迟 下载速度(MB/s) 地区码
@@ -58,7 +69,7 @@ func ParseCfstOutput(out []byte) ([]CfstResult, error) {
 
 // RunCfst 在 cfstDir 下执行 cfst，返回解析出的结果。
 // 轮次语义：解析出 ≥1 个 IP 才算成功轮。
-func RunCfst(ctx context.Context, cfstDir, cfstPath, url string) ([]CfstResult, error) {
+func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstResult, error) {
 	// 关键：cmd.Dir 会让子进程先 chdir 再解析可执行文件路径，相对路径会被二次解析
 	// （./cfst/cfst 在 chdir 到 ./cfst 后变成找 ./cfst/cfst/cfst → ENOTDIR）。
 	// 在父进程内先转绝对（相对当前 cwd）。
@@ -70,8 +81,7 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath, url string) ([]CfstResult, 
 		return nil, fmt.Errorf("cfst path abs: %v", err)
 	}
 
-	args := append(append([]string{}, cfstArgs...), "-url", url)
-	cmd := exec.CommandContext(ctx, cfstPath, args...)
+	cmd := exec.CommandContext(ctx, cfstPath, cfstArgs(o)...)
 	cmd.Dir = cfstDir
 
 	start := time.Now()

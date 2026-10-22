@@ -31,10 +31,7 @@ const (
 	penaltyFactor = 0.1
 
 	// cfst 每轮入池数量（-p 参数）
-	cfstTopN = 20
-
-	// 初始分时 U、R 视为 1.0
-	initSuccess = 1
+	cfstTopN    = 20
 	initRetries = 0
 
 	// 延迟归一化上限（1000ms → 0 分）

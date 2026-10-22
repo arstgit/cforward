@@ -1,0 +1,20 @@
+{
+  "listen": ":1234",
+  "target_port": 443,
+  "cfst_dir": "./cfst",
+  "pool_file": "pool.json",
+  "pool_min": 100,
+  "pool_max": 200,
+  "cooldown": "5m",
+  "fail_evict": 5,
+  "dial_timeout": "3s",
+  "no_data_timeout": "10s",
+  "cfst_url": "https://speed.cloudflare.com/__down?bytes=3000000",
+  "cfst_threads": 100,
+  "cfst_tests": 2,
+  "cfst_dl_count": 10,
+  "cfst_dl_time": 10,
+  "cfst_top": 20,
+  "status_interval": "60s",
+  "debug": false
+}
