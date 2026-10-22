@@ -75,6 +75,7 @@ func defaultConfig() Config {
 		CfstDLCount:    10,
 		CfstDLTime:     10,
 		CfstTop:        20,
+		CfstDD:         true, // latency-only by default (saves traffic); opt in to download tests
 		StatusInterval: Duration(60 * time.Second),
 	}
 }
@@ -165,7 +166,7 @@ func main() {
 	fs.IntVar(&cfg.CfstDLCount, "cfst-dl-count", cfg.CfstDLCount, "cfst download test count (-dn)")
 	fs.IntVar(&cfg.CfstDLTime, "cfst-dl-time", cfg.CfstDLTime, "cfst per-IP download test time limit in seconds (-dt)")
 	fs.IntVar(&cfg.CfstTop, "cfst-top", cfg.CfstTop, "cfst results added to the pool (-p)")
-	fs.BoolVar(&cfg.CfstDD, "cfst-dd", cfg.CfstDD, "disable the cfst download speed test (saves traffic; initial score becomes latency-based)")
+	fs.BoolVar(&cfg.CfstDD, "cfst-dd", cfg.CfstDD, "skip the cfst download speed test (default on; set -cfst-dd=false to enable download tests)")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")

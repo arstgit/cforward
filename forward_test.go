@@ -276,6 +276,9 @@ func TestLoadConfig(t *testing.T) {
 // ---- cfst download-test-less (-dd) mode ----
 
 func TestCfstArgsDD(t *testing.T) {
+	if !defaultConfig().CfstDD {
+		t.Fatal("download speed test must be off by default")
+	}
 	base := CfstOpts{URL: "https://x", Threads: 100, Tests: 2, DLCount: 10, DLTime: 10, Top: 20}
 	args := cfstArgs(base)
 	for _, a := range args {

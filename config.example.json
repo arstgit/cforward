@@ -15,7 +15,7 @@
   "cfst_dl_count": 10,
   "cfst_dl_time": 10,
   "cfst_top": 20,
-  "cfst_dd": false,
+  "cfst_dd": true,
   "status_interval": "60s",
   "debug": false
 }
