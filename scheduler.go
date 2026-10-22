@@ -8,17 +8,19 @@ import (
 )
 
 const (
-	// 池内最高分低于此值触发补池（数量够但全是烂 IP 也刷新）
+	// Refill when the best score in the pool drops below this (plenty of IPs,
+	// but all bad → still refresh).
 	scoreFloorTrigger = 50.0
-	// 单轮 cfst 总时长上限（含下载测速），超时 kill
+	// Upper bound for one cfst round (includes download tests); killed on timeout.
 	cfstMaxDuration = 10 * time.Minute
-	// 调度评估周期（事件驱动为主，此为兜底）
+	// Scheduling evaluation period (event-driven primarily; this is the fallback).
 	evalInterval = 10 * time.Second
 )
 
-// Scheduler 事件驱动补池：
-// 启动即跑；池内 IP < poolMin 或最高分 < scoreFloorTrigger 时补池；
-// 一轮完成后不足则至少冷却 cooldown 再补；正在跑时不重复触发。
+// Scheduler refills the pool event-driven:
+// runs immediately at startup; refills when pool size < poolMin or the best score
+// < scoreFloorTrigger; after a completed round, waits at least cooldown before
+// refilling again; never triggers while a round is already running.
 type Scheduler struct {
 	pool *Pool
 	cfg  Config
@@ -31,7 +33,7 @@ type Scheduler struct {
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
-	// 启动即触发（池子空/不足时立即跑第一轮）
+	// Kick off immediately at startup (empty/insufficient pool).
 	s.wake()
 
 	t := time.NewTicker(evalInterval)
@@ -52,7 +54,7 @@ func (s *Scheduler) wake() {
 	s.eval()
 }
 
-// needRefill 是否满足补池条件（不加锁，评估时读快照）。
+// needRefill reports whether a refill round is due (reads snapshots, no locks needed).
 func (s *Scheduler) needRefill() bool {
 	if s.pool.Size() < s.cfg.PoolMin {
 		return true
@@ -80,7 +82,7 @@ func (s *Scheduler) eval() {
 	go s.runOnce()
 }
 
-// runOnce 执行一轮 cfst 并把结果并入池子。
+// runOnce executes one cfst round and merges the results into the pool.
 func (s *Scheduler) runOnce() {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfstMaxDuration)
@@ -106,7 +108,8 @@ func (s *Scheduler) runOnce() {
 
 	if err != nil {
 		slog.Error("cfst round failed", "err", err, "duration", time.Since(start))
-		// 失败轮不计轮次；冷却后 scheduler 会自动重试
+		// Failed rounds do not advance the round counter; the scheduler retries
+		// automatically after the cooldown.
 		return
 	}
 	added, refreshed := s.pool.AddCfstResults(results)

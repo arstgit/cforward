@@ -14,14 +14,15 @@ import (
 	"time"
 )
 
-// CfstOpts cfst 运行参数（可配置部分；-tlr 0 丢包过滤与 -o "" stdout 输出是语义要求，固定）。
+// CfstOpts holds tunable cfst subprocess parameters.
+// (-tlr 0 packet-loss filtering and -o "" stdout output are semantic requirements and stay fixed.)
 type CfstOpts struct {
 	URL     string
 	Threads int // -n
 	Tests   int // -t
 	DLCount int // -dn
 	DLTime  int // -dt
-	Top     int // -p 入池数量
+	Top     int // -p: number of results added to the pool
 }
 
 func cfstArgs(o CfstOpts) []string {
@@ -31,20 +32,22 @@ func cfstArgs(o CfstOpts) []string {
 		"-dn", strconv.Itoa(o.DLCount),
 		"-dt", strconv.Itoa(o.DLTime),
 		"-p", strconv.Itoa(o.Top),
-		"-tlr", "0", // 丢包率上限 0：只保留零丢包 IP
-		"-o", "", // 不写 result.csv，从 stdout 解析
+		"-tlr", "0", // packet-loss upper bound 0: keep only zero-loss IPs
+		"-o", "", // do not write result.csv; parse stdout instead
 		"-url", o.URL,
 	}
 }
 
-// 结果行：行首是 IPv4，后跟 已发送 已接收 丢包率 平均延迟 下载速度(MB/s) 地区码
-// 进度条噪声形如 "123 / 5955 [bar] 可用: 45"，行首是数字+空格+/，不会命中。
+// Result rows start with an IPv4 address followed by:
+// sent received loss% avg-latency speed(MB/s) region-code
+// Progress-bar noise looks like "123 / 5955 [bar] 可用: 45" and never matches.
 var resultLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\S+)\s*$`)
 
-// ParseCfstOutput 从 cfst stdout 提取结果行，返回 IP 列表（按输出顺序 = 分数降序）。
+// ParseCfstOutput extracts result rows from cfst stdout (output order = score order).
 func ParseCfstOutput(out []byte) ([]CfstResult, error) {
 	var results []CfstResult
-	// 进度条用 \r 刷新在同一行内，先按 \n 分行再按 \r 切分，避免 \r 粘连行
+	// The progress bar refreshes in-place with \r on a single line: split on \n first,
+	// then let strings.Fields strip any residual \r-joined segments.
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
 		fields := strings.Fields(string(line))
 		if len(fields) != 7 {
@@ -67,12 +70,13 @@ func ParseCfstOutput(out []byte) ([]CfstResult, error) {
 	return results, nil
 }
 
-// RunCfst 在 cfstDir 下执行 cfst，返回解析出的结果。
-// 轮次语义：解析出 ≥1 个 IP 才算成功轮。
+// RunCfst executes cfst inside cfstDir and returns parsed results.
+// Round semantics: a round only counts if at least one IP was parsed.
 func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstResult, error) {
-	// 关键：cmd.Dir 会让子进程先 chdir 再解析可执行文件路径，相对路径会被二次解析
-	// （./cfst/cfst 在 chdir 到 ./cfst 后变成找 ./cfst/cfst/cfst → ENOTDIR）。
-	// 在父进程内先转绝对（相对当前 cwd）。
+	// Critical: with cmd.Dir set, the child chdirs first and then resolves the
+	// executable path, so a relative path would be resolved a second time inside the
+	// new directory (./cfst/cfst after chdir to ./cfst looks for ./cfst/cfst/cfst →
+	// ENOTDIR). Resolve to absolute paths in the parent first.
 	var err error
 	if cfstDir, err = filepath.Abs(cfstDir); err != nil {
 		return nil, fmt.Errorf("cfst dir abs: %v", err)
@@ -92,8 +96,9 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstR
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("cfst %w", ctx.Err())
 		}
-		// 只有"已启动但非零退出"才值得尝试解析 stdout；
-		// fork/exec 失败（找不到文件、无权限等）直接报错，不混淆解析信息。
+		// Only a non-zero exit after a successful spawn is worth parsing stdout for;
+		// fork/exec failures (missing file, no permission, ...) are reported directly
+		// so the parse error does not confuse the real cause.
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
 			return nil, fmt.Errorf("cfst exec failed: %w", err)

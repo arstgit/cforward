@@ -10,72 +10,69 @@ import (
 	"time"
 )
 
-// ---- 算法常量（不进 flag，调它们属于改算法） ----
+// ---- Scoring constants (algorithm parameters, intentionally not configurable) ----
 
 const (
-	// 计分权重
+	// Score weights: 0.4L + 0.3S + 0.2U + 0.1R
 	weightLat   = 0.4
 	weightSpeed = 0.3
 	weightSucc  = 0.2
 	weightRetry = 0.1
 
-	// EMA 平滑系数（实时延迟/速度）
+	// EMA smoothing factor for live latency/speed
 	emaAlpha = 0.3
 
-	// 实时样本数达到该值后完全接管初始分，之前按样本数加权过渡
+	// Live stats fully take over the cfst baseline after this many samples;
+	// before that, baseline and live values are blended by sample count.
 	liveSamplesTakeover = 5
 
-	// 连续失败次数达到该值 → 分数打骨折
+	// Consecutive failures at/above this many crush the score...
 	consecFailPenalty = 3
-	// 打骨折系数
+	// ...by this factor.
 	penaltyFactor = 0.1
 
-	// cfst 每轮入池数量（-p 参数）
-	cfstTopN    = 20
-	initRetries = 0
-
-	// 延迟归一化上限（1000ms → 0 分）
+	// Latency normalization ceiling (1000ms → 0 points)
 	latNormMs = 1000.0
-	// 速度归一化饱和参数（20MB/s → 63 分）
+	// Speed normalization saturation parameter (20MB/s → ~63 points)
 	speedNorm = 20.0
 )
 
-// IPEntry 池中一个 IP 的全部状态。
+// IPEntry is all state for one IP in the pool.
 type IPEntry struct {
 	IP string `json:"ip"`
 
-	// cfst 基线（每次 cfst 命中时刷新）
+	// cfst baseline (refreshed every time a cfst round hits this IP)
 	BaseLatency float64 `json:"base_latency"` // ms
 	BaseSpeed   float64 `json:"base_speed"`   // MB/s
 	HasBase     bool    `json:"has_base"`
 
-	// 实时统计
-	Samples   int     `json:"samples"`    // 服务过的连接数
-	LatEMA    float64 `json:"lat_ema"`    // 拨号耗时 EMA (ms)
-	SpeedEMA  float64 `json:"speed_ema"`  // 吞吐 EMA (MB/s)
-	Attempts  int     `json:"attempts"`   // 拨号尝试次数
-	Successes int     `json:"successes"`  // 拨号成功次数
-	TransFail int     `json:"trans_fail"` // 传输失败次数
-	Retries   int     `json:"retries"`    // 归因到本 IP 的降级重试次数
+	// Live stats
+	Samples   int     `json:"samples"`    // connections served
+	LatEMA    float64 `json:"lat_ema"`    // dial latency EMA (ms)
+	SpeedEMA  float64 `json:"speed_ema"`  // throughput EMA (MB/s)
+	Attempts  int     `json:"attempts"`   // dial attempts
+	Successes int     `json:"successes"`  // successful dials
+	TransFail int     `json:"trans_fail"` // transport failures
+	Retries   int     `json:"retries"`    // downgrade dials attributed to this IP
 
-	ConsecFail int `json:"consec_fail"` // 连续失败
-	CumFail    int `json:"cum_fail"`    // 累计失败（淘汰依据）
+	ConsecFail int `json:"consec_fail"` // consecutive failures (penalty trigger)
+	CumFail    int `json:"cum_fail"`    // cumulative failures (eviction trigger)
 
-	LastSeenRound int       `json:"last_seen_round"` // 最近一次出现在 cfst 结果的轮次
+	LastSeenRound int       `json:"last_seen_round"` // last cfst round this IP appeared in
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// scoreFactor 当前是否处于连败惩罚中。
+// penalized reports whether the IP is under the consecutive-failure penalty.
 func (e *IPEntry) penalized() bool { return e.ConsecFail >= consecFailPenalty }
 
-// latency 参与打分的延迟：样本不足时用 cfst 基线过渡。
+// latency returns the latency used for scoring: the cfst baseline is blended in
+// until enough live samples have been collected.
 func (e *IPEntry) latency() float64 {
 	if e.Samples >= liveSamplesTakeover {
 		return e.LatEMA
 	}
 	if e.HasBase {
-		// 按样本数加权过渡：samples/5 权重给实时，剩余给基线
 		w := float64(e.Samples) / liveSamplesTakeover
 		return e.LatEMA*w + e.BaseLatency*(1-w)
 	}
@@ -93,7 +90,7 @@ func (e *IPEntry) speed() float64 {
 	return e.SpeedEMA
 }
 
-// successRate 拨号成功且传输未失败的比率。
+// successRate is the share of dials that succeeded and whose transport did not fail.
 func (e *IPEntry) successRate() float64 {
 	if e.Attempts == 0 {
 		return 1.0
@@ -105,7 +102,7 @@ func (e *IPEntry) successRate() float64 {
 	return ok / float64(e.Attempts)
 }
 
-// retryRate 归因重试次数占（重试+成功连接）的比例。
+// retryRate is attributed retries over (retries + successful connections).
 func (e *IPEntry) retryRate() float64 {
 	denom := float64(e.Retries + e.Samples)
 	if denom == 0 {
@@ -114,7 +111,7 @@ func (e *IPEntry) retryRate() float64 {
 	return float64(e.Retries) / denom
 }
 
-// Score 按公式计算总分：0.4L + 0.3S + 0.2U + 0.1R，连败惩罚 ×0.1。
+// Score computes 0.4L + 0.3S + 0.2U + 0.1R, crushed by penaltyFactor when penalized.
 func (e *IPEntry) Score() float64 {
 	L := 100 * (1 - clamp(e.latency()/latNormMs, 0, 1))
 	S := 100 * (1 - math.Exp(-e.speed()/speedNorm))
@@ -137,21 +134,21 @@ func clamp(v, lo, hi float64) float64 {
 	return v
 }
 
-// ---- 池子 ----
+// ---- Pool ----
 
 type Pool struct {
 	mu      sync.Mutex
 	entries map[string]*IPEntry
-	rounds  int // 成功完成 cfst 补池的轮次
+	rounds  int // successful cfst refill rounds
 
-	changed chan struct{} // 非阻塞变更通知（buffered 1）
+	changed chan struct{} // non-blocking change notification (buffered 1)
 
-	// 持久化
+	// Persistence
 	file      string
 	dirty     bool
 	saveTimer *time.Timer
 
-	// 限制（由配置注入）
+	// Limits (injected from config)
 	max       int
 	failEvict int
 }
@@ -174,7 +171,7 @@ func (p *Pool) notify() {
 	}
 }
 
-// Load 启动时从 pool.json 恢复。
+// Load restores the pool from pool.json at startup.
 func (p *Pool) Load() error {
 	b, err := os.ReadFile(p.file)
 	if err != nil {
@@ -208,7 +205,7 @@ func (p *Pool) markDirty() {
 	p.mu.Unlock()
 }
 
-// Save 写 pool.json（内部用，也供退出时 flush 调用）。
+// Save writes pool.json (debounced; also used for the shutdown flush).
 func (p *Pool) Save() {
 	p.mu.Lock()
 	if p.saveTimer != nil {
@@ -242,7 +239,7 @@ func (p *Pool) Save() {
 	}
 }
 
-// Close flush 并停止后台保存。
+// Close flushes and stops the background saver.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.saveTimer != nil {
@@ -253,16 +250,16 @@ func (p *Pool) Close() {
 	p.Save()
 }
 
-// CfstResult 一行 cfst 结果。
+// CfstResult is one result row from cfst.
 type CfstResult struct {
 	IP      string
 	Latency float64 // ms
 	Speed   float64 // MB/s
 }
 
-// AddCfstResults 把一轮 cfst 结果并入池子：
-// 新 IP 用 cfst 数据建初始分；已有 IP 只刷新基线。
-// 返回新增/刷新数量。
+// AddCfstResults merges one cfst round into the pool:
+// new IPs get an initial score from cfst data; existing IPs only refresh their baseline.
+// Returns the number of added/refreshed entries.
 func (p *Pool) AddCfstResults(results []CfstResult) (added, refreshed int) {
 	p.mu.Lock()
 	p.rounds++
@@ -293,7 +290,7 @@ func (p *Pool) AddCfstResults(results []CfstResult) (added, refreshed int) {
 			refreshed++
 		}
 	}
-	// 连续 3 轮未出现且实时样本 <5 → 移出
+	// IPs unseen for 3 rounds with fewer than liveSamplesTakeover samples are stale → evict.
 	evicted := 0
 	for ip, e := range p.entries {
 		if e.LastSeenRound <= round-3 && e.Samples < liveSamplesTakeover {
@@ -301,7 +298,7 @@ func (p *Pool) AddCfstResults(results []CfstResult) (added, refreshed int) {
 			evicted++
 		}
 	}
-	// 池子上限，超了踢分数最低
+	// Enforce the pool cap: evict the lowest-scoring entries beyond it.
 	over := len(p.entries) - p.max
 	if over > 0 {
 		p.evictLowestLocked(over)
@@ -334,14 +331,14 @@ func (p *Pool) evictLowestLocked(n int) {
 	}
 }
 
-// Size 当前池子大小。
+// Size returns the current pool size.
 func (p *Pool) Size() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.entries)
 }
 
-// BestScore 池内最高分；空池返回 0。
+// BestScore returns the highest score in the pool; 0 when empty.
 func (p *Pool) BestScore() float64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -354,7 +351,8 @@ func (p *Pool) BestScore() float64 {
 	return best
 }
 
-// Candidates 按分数降序返回候选 IP 的**拷贝**（调用方可在锁外安全读取计分字段）。
+// Candidates returns candidate IPs sorted by score, descending, as copies
+// (safe to read outside the lock).
 func (p *Pool) Candidates() []*IPEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -367,7 +365,7 @@ func (p *Pool) Candidates() []*IPEntry {
 	return list
 }
 
-// Top 返回前 n 名（日志用），n<=0 表示全部。返回的是拷贝，锁外可安全读。
+// Top returns the top n entries for logging (n<=0 means all). Copies, safe to read.
 func (p *Pool) Top(n int) []*IPEntry {
 	all := p.Candidates()
 	if n <= 0 || n >= len(all) {
@@ -376,7 +374,7 @@ func (p *Pool) Top(n int) []*IPEntry {
 	return all[:n]
 }
 
-// ReportDial 记录一次拨号结果。ok=true 时 latencyMs 为拨号耗时。
+// ReportDial records one dial result. When ok, latencyMs is the dial duration.
 func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 	p.mu.Lock()
 	e := p.entries[ip]
@@ -417,9 +415,9 @@ func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 	p.notify()
 }
 
-// ReportConn 记录一次成功建立并结束的连接。
-// ok: 传输是否正常结束（无错误）；bytes: 客户端→上游总字节；duration: 连接时长；
-// retries: 该连接建立过程中经历的降级拨号次数（归因到最终 IP）。
+// ReportConn records one established and finished connection segment.
+// ok: transport ended without errors; bytes: client→upstream total bytes;
+// duration: segment duration; retries: downgrade dials during setup (attributed to the final IP).
 func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duration, retries int) {
 	p.mu.Lock()
 	e := p.entries[ip]
@@ -455,7 +453,7 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	p.notify()
 }
 
-// Evict 把 IP 移出池子并记录日志。
+// Evict removes an IP from the pool and logs the event.
 func (p *Pool) Evict(ip, reason string) {
 	p.mu.Lock()
 	e := p.entries[ip]
@@ -471,5 +469,5 @@ func (p *Pool) Evict(ip, reason string) {
 	p.notify()
 }
 
-// Changed 返回变更通知 channel。
+// Changed returns the change-notification channel.
 func (p *Pool) Changed() <-chan struct{} { return p.changed }

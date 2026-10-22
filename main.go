@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Duration 支持 JSON 中以 "5m" 字符串形式配置时长。
+// Duration is a time.Duration that unmarshals from JSON strings like "5m".
 type Duration time.Duration
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
@@ -33,7 +33,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// Config 全部可调配置。加载顺序：默认值 < JSON 配置文件 < 命令行 flag。
+// Config holds every tunable setting. Load order: defaults < JSON config file < CLI flags.
 type Config struct {
 	Listen         string   `json:"listen"`
 	CfstDir        string   `json:"cfst_dir"`
@@ -51,7 +51,7 @@ type Config struct {
 	CfstTests      int      `json:"cfst_tests"`    // cfst -t
 	CfstDLCount    int      `json:"cfst_dl_count"` // cfst -dn
 	CfstDLTime     int      `json:"cfst_dl_time"`  // cfst -dt
-	CfstTop        int      `json:"cfst_top"`      // cfst -p 入池数量
+	CfstTop        int      `json:"cfst_top"`      // cfst -p: results added to pool
 	StatusInterval Duration `json:"status_interval"`
 	Debug          bool     `json:"debug"`
 }
@@ -78,7 +78,7 @@ func defaultConfig() Config {
 	}
 }
 
-// loadConfig 从 JSON 文件加载配置；文件中未出现的字段保持默认值。
+// loadConfig reads a JSON config file; fields not present keep their defaults.
 func loadConfig(path string) (Config, error) {
 	cfg := defaultConfig()
 	b, err := os.ReadFile(path)
@@ -91,7 +91,7 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-// findArg 手动扫描命令行里 -config 的值（注册全部 flag 之前就需要用到）。
+// findArg scans the raw CLI args for the value of -config, before any flags are registered.
 func findArg(args []string, name string) string {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -108,13 +108,14 @@ func findArg(args []string, name string) string {
 	return ""
 }
 
-// normalize 补齐默认路径并处理相对路径。
+// normalize fills default paths and converts relative paths to absolute.
 func (c *Config) normalize() {
 	if c.CfstPath == "" {
 		c.CfstPath = filepath.Join(c.CfstDir, "cfst")
 	}
-	// cfst 相对路径必须转绝对：os/exec 设置 cmd.Dir 后，子进程先 chdir 再解析
-	// 可执行文件路径，相对路径会在新目录下被二次解析 → ENOTDIR。
+	// Relative cfst paths must become absolute: with cmd.Dir set, os/exec chdirs the
+	// child first and then resolves the executable path, so a relative path is
+	// resolved a second time inside the new directory → ENOTDIR.
 	if !filepath.IsAbs(c.CfstDir) {
 		if abs, err := filepath.Abs(c.CfstDir); err == nil {
 			c.CfstDir = abs
@@ -127,9 +128,12 @@ func (c *Config) normalize() {
 	}
 }
 
+// version is injected at build time: go build -ldflags "-X main.version=v1.0.0"
+var version = "dev"
+
 func main() {
-	// 两阶段解析：先手动摘出 -config，加载配置文件，再以配置文件值为 flag 默认值注册，
-	// 这样命令行 flag 自然覆盖配置文件。
+	// Two-phase parsing: pick out -config manually, load the config file, then register
+	// every flag with the config-file values as defaults so CLI flags naturally win.
 	configPath := findArg(os.Args[1:], "config")
 	cfg := defaultConfig()
 	if configPath != "" {
@@ -141,28 +145,35 @@ func main() {
 		cfg = loaded
 	}
 
-	fs := flag.NewFlagSet("cfstnat", flag.ExitOnError)
-	fs.StringVar(&configPath, "config", configPath, "JSON 配置文件路径（命令行 flag 优先级更高）")
-	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "监听地址")
-	fs.StringVar(&cfg.CfstDir, "cfst-dir", cfg.CfstDir, "cfst 工作目录（含 ip.txt）")
-	fs.StringVar(&cfg.CfstPath, "cfst-path", cfg.CfstPath, "cfst 可执行文件路径（默认 <cfst-dir>/cfst）")
-	fs.IntVar(&cfg.TargetPort, "target-port", cfg.TargetPort, "转发目标端口（CF IP 上）")
-	fs.StringVar(&cfg.PoolFile, "pool-file", cfg.PoolFile, "池子持久化文件")
-	fs.IntVar(&cfg.PoolMin, "pool-min", cfg.PoolMin, "池内 IP 低于此数触发补池")
-	fs.IntVar(&cfg.PoolMax, "pool-max", cfg.PoolMax, "池子上限，超出踢最低分")
-	fs.DurationVar((*time.Duration)(&cfg.Cooldown), "cooldown", cfg.Cooldown.Std(), "补池完成后不足时，下次补池的最小间隔")
-	fs.IntVar(&cfg.FailEvict, "fail-evict", cfg.FailEvict, "累计失败达到此数移出池子")
-	fs.DurationVar((*time.Duration)(&cfg.DialTimeout), "dial-timeout", cfg.DialTimeout.Std(), "拨号超时")
-	fs.DurationVar((*time.Duration)(&cfg.NoDataTimeout), "no-data-timeout", cfg.NoDataTimeout.Std(), "路径死亡判定时长（TCP_USER_TIMEOUT）")
-	fs.StringVar(&cfg.CfstURL, "cfst-url", cfg.CfstURL, "cfst 下载测速地址")
-	fs.IntVar(&cfg.CfstThreads, "cfst-threads", cfg.CfstThreads, "cfst 延迟测速线程数 (-n)")
-	fs.IntVar(&cfg.CfstTests, "cfst-tests", cfg.CfstTests, "cfst 每 IP 测速次数 (-t)")
-	fs.IntVar(&cfg.CfstDLCount, "cfst-dl-count", cfg.CfstDLCount, "cfst 下载测速数量 (-dn)")
-	fs.IntVar(&cfg.CfstDLTime, "cfst-dl-time", cfg.CfstDLTime, "cfst 单 IP 下载测速时长上限秒 (-dt)")
-	fs.IntVar(&cfg.CfstTop, "cfst-top", cfg.CfstTop, "cfst 结果入池数量 (-p)")
-	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "状态块打印间隔")
-	fs.BoolVar(&cfg.Debug, "debug", cfg.Debug, "debug 日志")
+	fs := flag.NewFlagSet("cforward", flag.ExitOnError)
+	fs.StringVar(&configPath, "config", configPath, "path to JSON config file (CLI flags take precedence)")
+	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "listen address")
+	fs.StringVar(&cfg.CfstDir, "cfst-dir", cfg.CfstDir, "cfst working directory (contains ip.txt)")
+	fs.StringVar(&cfg.CfstPath, "cfst-path", cfg.CfstPath, "cfst executable path (default <cfst-dir>/cfst)")
+	fs.IntVar(&cfg.TargetPort, "target-port", cfg.TargetPort, "upstream port on the CF IP")
+	fs.StringVar(&cfg.PoolFile, "pool-file", cfg.PoolFile, "pool persistence file")
+	fs.IntVar(&cfg.PoolMin, "pool-min", cfg.PoolMin, "refill pool when IP count drops below this")
+	fs.IntVar(&cfg.PoolMax, "pool-max", cfg.PoolMax, "pool size cap; evict lowest score beyond this")
+	fs.DurationVar((*time.Duration)(&cfg.Cooldown), "cooldown", cfg.Cooldown.Std(), "min interval before the next refill after a completed round")
+	fs.IntVar(&cfg.FailEvict, "fail-evict", cfg.FailEvict, "evict an IP after this many cumulative failures")
+	fs.DurationVar((*time.Duration)(&cfg.DialTimeout), "dial-timeout", cfg.DialTimeout.Std(), "dial timeout")
+	fs.DurationVar((*time.Duration)(&cfg.NoDataTimeout), "no-data-timeout", cfg.NoDataTimeout.Std(), "dead-path detection window (TCP_USER_TIMEOUT)")
+	fs.StringVar(&cfg.CfstURL, "cfst-url", cfg.CfstURL, "cfst download speed test URL")
+	fs.IntVar(&cfg.CfstThreads, "cfst-threads", cfg.CfstThreads, "cfst latency test threads (-n)")
+	fs.IntVar(&cfg.CfstTests, "cfst-tests", cfg.CfstTests, "cfst tests per IP (-t)")
+	fs.IntVar(&cfg.CfstDLCount, "cfst-dl-count", cfg.CfstDLCount, "cfst download test count (-dn)")
+	fs.IntVar(&cfg.CfstDLTime, "cfst-dl-time", cfg.CfstDLTime, "cfst per-IP download test time limit in seconds (-dt)")
+	fs.IntVar(&cfg.CfstTop, "cfst-top", cfg.CfstTop, "cfst results added to the pool (-p)")
+	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
+	var showVersion bool
+	fs.BoolVar(&showVersion, "version", false, "print version and exit")
+	fs.BoolVar(&cfg.Debug, "debug", cfg.Debug, "enable debug logging")
 	fs.Parse(os.Args[1:])
+
+	if showVersion {
+		fmt.Println("cforward", version)
+		os.Exit(0)
+	}
 
 	cfg.normalize()
 
@@ -171,7 +182,7 @@ func main() {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
-	slog.Info("cfstnat starting", "config", configPath, "listen", cfg.Listen,
+	slog.Info("cforward starting", "config", configPath, "listen", cfg.Listen,
 		"cfst_dir", cfg.CfstDir, "target_port", cfg.TargetPort)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -182,11 +193,11 @@ func main() {
 		slog.Warn("pool load failed", "err", err)
 	}
 
-	// 补池调度器
+	// Pool refill scheduler.
 	sched := &Scheduler{pool: pool, cfg: cfg}
 	go sched.Run(ctx)
 
-	// 转发
+	// TCP forwarder.
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		slog.Error("listen", "addr", cfg.Listen, "err", err)
@@ -196,7 +207,7 @@ func main() {
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std())
 	go fw.Serve(ctx, ln)
 
-	// 周期状态块
+	// Periodic status block.
 	go func() {
 		t := time.NewTicker(cfg.StatusInterval.Std())
 		defer t.Stop()
@@ -215,17 +226,17 @@ func main() {
 	pool.Close()
 }
 
-// printStatus 打印可读的状态块（Top10 表格）。
+// printStatus prints a readable status block (Top-10 table).
 func printStatus(cfg *Config, pool *Pool) {
 	top := pool.Top(10)
 	var b strings.Builder
-	fmt.Fprintf(&b, "── cfstnat 状态 ────────────────────────────────\n")
-	fmt.Fprintf(&b, "  pool: %d IPs (min %d / max %d)    活跃连接: %d\n",
+	fmt.Fprintf(&b, "── cforward status ──────────────────────────────\n")
+	fmt.Fprintf(&b, "  pool: %d IPs (min %d / max %d)    active conns: %d\n",
 		pool.Size(), cfg.PoolMin, cfg.PoolMax, activeConns.Load())
 	if len(top) == 0 {
-		fmt.Fprintln(&b, "  （池子为空，等待 cfst 建池…）")
+		fmt.Fprintln(&b, "  (pool empty, waiting for the first cfst round…)")
 	} else {
-		fmt.Fprintf(&b, "  %-3s  %-16s  %6s  %6s  %11s\n", "#", "IP", "分数", "延迟", "速度")
+		fmt.Fprintf(&b, "  %-3s  %-16s  %6s  %6s  %11s\n", "#", "IP", "score", "lat", "speed")
 		for i, e := range top {
 			fmt.Fprintf(&b, "  %-3d  %-16s  %6.1f  %6.0fms  %6.1fMB/s\n",
 				i+1, e.IP, e.Score(), e.latency(), e.speed())

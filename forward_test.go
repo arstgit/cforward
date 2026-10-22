@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// ---- 假上游 ----
+// ---- Fake upstream ----
 
 type fakeUpstream struct {
 	ln    net.Listener
@@ -42,15 +42,16 @@ func newFakeUpstream(t *testing.T, ln net.Listener) *fakeUpstream {
 			u.mu.Lock()
 			u.conns = append(u.conns, c)
 			u.mu.Unlock()
-			go io.Copy(c, c) // 回显
+			go io.Copy(c, c) // echo back
 		}
 	}()
 	return u
 }
 
-// die 模拟 IP 整体死亡：关 listener（新拨号被拒）+ 以 linger(0) 掐断所有连接。
-// 注意：Linux 上 linger(0) 可能发 RST（转发器同连接续传）也可能发 FIN（转发器视为
-// 服务端正常关闭 → 关客户端连接），两种都是合法语义，测试两者都覆盖。
+// die simulates a dead IP: closes the listener (new dials are refused) and kills all
+// connections with linger(0). Note: on Linux linger(0) may send RST (forwarder resumes
+// on the same client connection) or FIN (forwarder treats it as a clean server close and
+// closes the client connection); both are legal semantics, so the test covers both.
 func (u *fakeUpstream) die() {
 	u.ln.Close()
 	u.mu.Lock()
@@ -63,10 +64,10 @@ func (u *fakeUpstream) die() {
 	}
 }
 
-// ---- 核心需求：上游断流 → 快速换 IP 恢复转发 ----
+// ---- Core requirement: upstream breaks → fast switch to another IP ----
 
 func TestSwitchOnUpstreamDeath(t *testing.T) {
-	// 找一个空闲端口，两个假上游共用（同端口不同 IP，模拟 CF 的 IP:443 形态）
+	// Find a free port shared by both fake upstreams (same port, different IPs, mimicking CF IP:443).
 	port := freePort(t)
 
 	up1 := newFakeUpstream(t, listenOn(t, "127.0.0.1", port))
@@ -75,7 +76,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 	defer up2.ln.Close()
 
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
-	// up1 延迟更低 → 分更高，先被选中
+	// up1 has lower latency → higher score → picked first
 	pool.AddCfstResults([]CfstResult{
 		{IP: "127.0.0.1", Latency: 10, Speed: 50},
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
@@ -95,17 +96,18 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 	}
 	br := bufio.NewReader(client)
 
-	// 第一段：数据走 up1（最高分）
+	// Segment 1: traffic goes through up1 (highest score)
 	if !echoRound(t, br, client, "hello-1") {
 		t.Fatal("first echo failed")
 	}
 
-	// 上游 up1 死亡
+	// up1 dies
 	up1.die()
 
-	// 恢复转发：
-	// RST 路径 → 同一客户端连接自动换 up2 续传（echo 直接成功）；
-	// FIN 路径 → 转发器关客户端连接，客户端重连后拨号落到 up2（up1 已拒绝）。
+	// Recovery:
+	// RST path → same client connection automatically resumes via up2 (echo succeeds directly);
+	// FIN path → forwarder closes the client connection; the client reconnects and the dial
+	// falls through to up2 (up1 now refuses).
 	recovered := false
 	for attempt := 0; attempt < 8 && !recovered; attempt++ {
 		if echoRound(t, br, client, "hello-2") {
@@ -124,7 +126,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		t.Fatal("no echo after upstream death; forwarder did not recover")
 	}
 
-	// 验证统计：up1 有传输失败或拨号失败；up2 被成功拨号并接管
+	// Verify stats: up1 has a transport or dial failure; up2 was dialed successfully and took over
 	time.Sleep(200 * time.Millisecond)
 	var p1, p2 *IPEntry
 	for _, e := range pool.Candidates() {
@@ -148,17 +150,17 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		p1.TransFail, p1.CumFail, p1.Successes, p1.Attempts, p2.Successes, p2.LatEMA)
 }
 
-// 拨号阶段失败立即降级：最高分 IP 已死（连接被拒）→ 新客户端连接应落到下一个
+// Dial-stage fallback: the highest-scoring IP is dead (connection refused) → the new client connection must land on the next one
 func TestDialFallback(t *testing.T) {
 	port := freePort(t)
 
-	// up1 分数更高但已死（端口无监听）；up2 存活
+	// up1 scores higher but is dead (nothing listening); up2 is alive
 	up2 := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
 	defer up2.ln.Close()
 
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{
-		{IP: "127.0.0.1", Latency: 5, Speed: 60}, // 更高分
+		{IP: "127.0.0.1", Latency: 5, Speed: 60}, // higher score
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
@@ -199,7 +201,7 @@ func echoRound(t *testing.T, br *bufio.Reader, w io.Writer, msg string) bool {
 	if _, err := w.Write([]byte(msg + "\n")); err != nil {
 		return false
 	}
-	// 每次尝试独立 deadline，避免一次超时拖死后续重试
+	// Fresh deadline per attempt, so one timeout does not kill the remaining retries
 	w.(net.Conn).SetReadDeadline(time.Now().Add(2 * time.Second))
 	line, err := br.ReadString('\n')
 	if err != nil {
@@ -208,10 +210,11 @@ func echoRound(t *testing.T, br *bufio.Reader, w io.Writer, msg string) bool {
 	return strings.TrimSpace(line) == msg
 }
 
-// ---- cfst stdout 解析 ----
+// ---- cfst stdout parsing ----
 
-// 回归：相对路径 + cmd.Dir 的解析 bug（子进程 chdir 后相对路径被二次解析 → ENOTDIR）。
-// 用假脚本模拟 cfst（不执行真 cfst）。
+// Regression: relative path + cmd.Dir resolution bug (the child chdirs first, then the
+// relative path is resolved a second time → ENOTDIR). A fake script stands in for cfst
+// (the real cfst is never executed).
 func TestRunCfstRelativePath(t *testing.T) {
 	dir := t.TempDir()
 	cfstDir := filepath.Join(dir, "cfst")
@@ -224,7 +227,7 @@ func TestRunCfstRelativePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 复现部署形态：以 temp 目录为 cwd，传相对路径
+	// Reproduce the deployment shape: temp dir as cwd, relative paths
 	t.Chdir(dir)
 	results, err := RunCfst(context.Background(), "./cfst", "./cfst/cfst", CfstOpts{
 		URL:     "https://speed.cloudflare.com/__down?bytes=3000000",
@@ -238,7 +241,7 @@ func TestRunCfstRelativePath(t *testing.T) {
 	}
 }
 
-// 配置加载：JSON 文件 + 默认值合并
+// Config loading: JSON file merged over defaults
 func TestLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	content := `{
@@ -256,15 +259,15 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 显式配置生效
+	// Explicit fields take effect
 	if cfg.Listen != ":9999" || cfg.PoolMin != 50 || cfg.CfstThreads != 200 || !cfg.Debug {
 		t.Fatalf("explicit fields: %+v", cfg)
 	}
-	// 时长字符串解析
+	// Duration strings parse
 	if cfg.Cooldown.Std() != 10*time.Minute {
 		t.Fatalf("cooldown: %v", cfg.Cooldown.Std())
 	}
-	// 未配置字段保持默认
+	// Unset fields keep defaults
 	if cfg.PoolMax != 200 || cfg.CfstTop != 20 || cfg.NoDataTimeout.Std() != 10*time.Second {
 		t.Fatalf("defaults: %+v", cfg)
 	}
@@ -288,7 +291,8 @@ func TestFindArg(t *testing.T) {
 }
 
 func TestParseCfstOutput(t *testing.T) {
-	// 远端实测输出（进度条噪声 + 结果表），-dd 模式速度列为 0.00
+	// Real captured output (progress-bar noise + result table), -dd mode: speed column is 0.00
+	// Fixture: cfst's real stdout is Chinese (upstream project); keep verbatim.
 	out := `# XIU2/CloudflareSpeedTest v2.3.5 
 
 开始延迟测速（模式：TCP, 端口：443, 范围：0 ~ 9999 ms, 丢包：1.00)
@@ -311,7 +315,7 @@ func TestParseCfstOutput(t *testing.T) {
 		t.Errorf("third: %+v", got[2])
 	}
 
-	// 带真实下载速度的表格（stdout 格式，非 CSV）
+	// Table with real download speeds (stdout format, not CSV)
 	tab := `IP 地址           已发送  已接收  丢包率  平均延迟  下载速度(MB/s)  地区码  
 104.21.41.113     4       4       0.00    282.97    15.00           SJC     
 104.16.1.34       4       4       0.00    272.78    12.73           LAX     
@@ -324,13 +328,13 @@ func TestParseCfstOutput(t *testing.T) {
 		t.Fatalf("tab parse: %+v", got2)
 	}
 
-	// 噪声但无结果 → 报错
+	// Noise only, no results → error
 	if _, err := ParseCfstOutput([]byte("4 / 5955 [bar] 可用: 4\n")); err == nil {
 		t.Fatal("want error on noise-only output")
 	}
 }
 
-// ---- 计分 ----
+// ---- Scoring ----
 
 func TestScoring(t *testing.T) {
 	fast := &IPEntry{IP: "1.1.1.1", HasBase: true, BaseLatency: 50, BaseSpeed: 30}
@@ -340,7 +344,7 @@ func TestScoring(t *testing.T) {
 	}
 	t.Logf("fast=%.1f slow=%.1f", fast.Score(), slow.Score())
 
-	// 连败惩罚 ×0.1
+	// Consecutive-failure penalty ×0.1
 	pen := &IPEntry{IP: "1.1.1.3", HasBase: true, BaseLatency: 50, BaseSpeed: 30}
 	before := pen.Score()
 	pen.ConsecFail = 3
@@ -348,16 +352,17 @@ func TestScoring(t *testing.T) {
 		t.Fatalf("penalty: before=%.2f after=%.2f want %.2f", before, got, before*penaltyFactor)
 	}
 
-	// 实时样本接管：LatEMA/SpeedEMA 替换基线
+	// Live sample takeover: LatEMA/SpeedEMA replace the baseline
 	tk := &IPEntry{IP: "1.1.1.4", HasBase: true, BaseLatency: 50, BaseSpeed: 30,
 		Samples: 5, LatEMA: 900, SpeedEMA: 30}
-	// 接管后延迟分 = 100*(1-900/1000)=10，总分 ≈ 57；未接管则用基线 50ms，总分 ≈ 91
+	// After takeover: latency score = 100*(1-900/1000)=10, total ≈ 57; without takeover the
+	// 50ms baseline would give ≈ 91.
 	if s := tk.Score(); s < 50 || s > 65 {
 		t.Fatalf("live latency should dominate after 5 samples, score=%.1f (want ~57)", s)
 	}
 }
 
-// ---- 池子生命周期 ----
+// ---- Pool lifecycle ----
 
 func TestPoolEviction(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
@@ -366,7 +371,7 @@ func TestPoolEviction(t *testing.T) {
 		{IP: "1.1.1.2", Latency: 10, Speed: 10},
 	})
 
-	// 累计失败 5 次 → 淘汰
+	// 5 cumulative failures → evicted
 	for i := 0; i < 5; i++ {
 		pool.ReportDial("1.1.1.1", false, 0)
 	}
@@ -377,7 +382,7 @@ func TestPoolEviction(t *testing.T) {
 		t.Fatal("1.1.1.2 should remain")
 	}
 
-	// 连续 3 轮未出现且无样本 → 淘汰
+	// Unseen for 3 rounds with no samples → evicted
 	pool.AddCfstResults([]CfstResult{{IP: "1.1.1.3", Latency: 10, Speed: 10}})
 	pool.AddCfstResults([]CfstResult{{IP: "1.1.1.3", Latency: 10, Speed: 10}})
 	pool.AddCfstResults([]CfstResult{{IP: "1.1.1.3", Latency: 10, Speed: 10}})
@@ -385,7 +390,7 @@ func TestPoolEviction(t *testing.T) {
 		t.Fatal("stale 1.1.1.2 should be evicted after 3 rounds unseen")
 	}
 
-	// 池上限：max=2，入 3 个踢最低分
+	// Pool cap: max=2, adding 3 evicts the lowest
 	small := NewPool(t.TempDir()+"/pool.json", 2, 5)
 	small.AddCfstResults([]CfstResult{
 		{IP: "1.1.1.1", Latency: 100, Speed: 1},
@@ -399,7 +404,7 @@ func TestPoolEviction(t *testing.T) {
 		t.Fatal("lowest-scoring 1.1.1.1 should be evicted on overflow")
 	}
 
-	// 持久化往返
+	// Persistence round-trip
 	pool.Save()
 	loaded := NewPool(pool.file, 200, 5)
 	if err := loaded.Load(); err != nil {

@@ -1,3 +1,11 @@
+# cfst tool and its data files (fetch from the upstream project yourself)
 /cfst/
-/pool.json
+
+# Build artifacts
+/cforward
 /cfstnat
+
+# Runtime state (local config, pool, logs)
+/pool.json
+/config.json
+*.log
