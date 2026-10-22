@@ -273,6 +273,53 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+// ---- cfst download-test-less (-dd) mode ----
+
+func TestCfstArgsDD(t *testing.T) {
+	base := CfstOpts{URL: "https://x", Threads: 100, Tests: 2, DLCount: 10, DLTime: 10, Top: 20}
+	args := cfstArgs(base)
+	for _, a := range args {
+		if a == "-dd" {
+			t.Fatal("-dd must not be present when DD is false")
+		}
+	}
+
+	base.DD = true
+	args = cfstArgs(base)
+	found := false
+	for _, a := range args {
+		if a == "-dd" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("-dd missing in args: %v", args)
+	}
+}
+
+// In -dd mode cfst reports speed 0.00, so the initial score carries no speed term:
+// ranking stays latency-monotonic (identical to download-test mode) and the live
+// throughput EMA fills the speed score in after a few connections.
+func TestScoringDDMode(t *testing.T) {
+	lowLat := &IPEntry{IP: "1.1.1.1", HasBase: true, BaseLatency: 60, BaseSpeed: 0}
+	highLat := &IPEntry{IP: "1.1.1.2", HasBase: true, BaseLatency: 300, BaseSpeed: 0}
+	if lowLat.Score() <= highLat.Score() {
+		t.Fatalf("dd-mode ranking must be latency-monotonic: %v vs %v",
+			lowLat.Score(), highLat.Score())
+	}
+	// No speed term: score = 0.4L + 0.2U + 0.1R
+	want := 0.4*100*(1-60.0/latNormMs) + 0.2*100 + 0.1*100
+	if got := lowLat.Score(); got != want {
+		t.Fatalf("dd-mode score: got %.3f want %.3f", got, want)
+	}
+	// Live speed takes over after liveSamplesTakeover connections.
+	live := &IPEntry{IP: "1.1.1.3", HasBase: true, BaseLatency: 60, BaseSpeed: 0,
+		Samples: 5, LatEMA: 60, SpeedEMA: 30}
+	if live.Score() <= lowLat.Score() {
+		t.Fatalf("live speed should raise the score above the no-speed baseline")
+	}
+}
+
 func TestFindArg(t *testing.T) {
 	cases := []struct {
 		args []string

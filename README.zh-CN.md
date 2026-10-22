@@ -78,6 +78,7 @@ go build -o cforward .
 | `-cfst-dl-count` | `10` | cfst 下载测速数量 (`-dn`) |
 | `-cfst-dl-time` | `10` | cfst 单 IP 下载测速时长上限秒 (`-dt`) |
 | `-cfst-top` | `20` | cfst 结果入池数量 (`-p`) |
+| `-cfst-dd` | `false` | 跳过 cfst 下载测速；省流量，初始分变为纯延迟制 |
 | `-status-interval` | `60s` | 状态块打印间隔 |
 | `-debug` | `false` | debug 日志 |
 

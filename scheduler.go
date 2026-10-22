@@ -96,6 +96,7 @@ func (s *Scheduler) runOnce() {
 		DLCount: s.cfg.CfstDLCount,
 		DLTime:  s.cfg.CfstDLTime,
 		Top:     s.cfg.CfstTop,
+		DD:      s.cfg.CfstDD,
 	}
 	results, err := RunCfst(ctx, s.cfg.CfstDir, s.cfg.CfstPath, opts)
 

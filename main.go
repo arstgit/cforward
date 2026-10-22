@@ -52,6 +52,7 @@ type Config struct {
 	CfstDLCount    int      `json:"cfst_dl_count"` // cfst -dn
 	CfstDLTime     int      `json:"cfst_dl_time"`  // cfst -dt
 	CfstTop        int      `json:"cfst_top"`      // cfst -p: results added to pool
+	CfstDD         bool     `json:"cfst_dd"`       // cfst -dd: skip the download speed test
 	StatusInterval Duration `json:"status_interval"`
 	Debug          bool     `json:"debug"`
 }
@@ -164,6 +165,7 @@ func main() {
 	fs.IntVar(&cfg.CfstDLCount, "cfst-dl-count", cfg.CfstDLCount, "cfst download test count (-dn)")
 	fs.IntVar(&cfg.CfstDLTime, "cfst-dl-time", cfg.CfstDLTime, "cfst per-IP download test time limit in seconds (-dt)")
 	fs.IntVar(&cfg.CfstTop, "cfst-top", cfg.CfstTop, "cfst results added to the pool (-p)")
+	fs.BoolVar(&cfg.CfstDD, "cfst-dd", cfg.CfstDD, "disable the cfst download speed test (saves traffic; initial score becomes latency-based)")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")

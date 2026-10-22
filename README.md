@@ -90,6 +90,7 @@ fall back to defaults.
 | `-cfst-dl-count` | `10` | cfst download test count (`-dn`) |
 | `-cfst-dl-time` | `10` | cfst per-IP download test time limit in seconds (`-dt`) |
 | `-cfst-top` | `20` | cfst results added to the pool (`-p`) |
+| `-cfst-dd` | `false` | skip the cfst download speed test; saves traffic, initial score becomes latency-based |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
 | `-debug` | `false` | enable debug logging |
@@ -121,6 +122,20 @@ Score = `0.4 × latency + 0.3 × speed + 0.2 × success + 0.1 × retry`, each no
 Initial scores come from cfst's latency/download speed (U and R start at 1.0); live stats
 update via EMA (α=0.3) and fully take over after 5 samples. 3 consecutive failures crush
 the score ×0.1; `-fail-evict` cumulative failures evict the IP.
+
+### Saving mobile data (`-cfst-dd`)
+
+With `-cfst-dd` enabled, cfst skips the download speed test (per-round traffic drops from
+`-cfst-dl-count × url size` — ~30 MB by default — to a few KB). Results are then sorted by
+latency and the initial score carries no speed term (0.4L + 0.2U + 0.1R); ranking stays
+latency-monotonic, and the live throughput EMA fills the speed score in after a few
+connections, so the scoring impact is minimal. The trade-off: one-shot filtering of
+"connects but cannot download" IPs is lost — live scoring and eviction cover it after a
+few connections. For interactive proxy use (web browsing) latency-first ranking is
+usually preferable; keep the download test for heavy-download workloads.
+
+To trim traffic while keeping the download test: lower `-cfst-dl-count` and shrink the
+payload via `-cfst-url` (e.g. `bytes=300000`) — a round then costs ~1 MB.
 
 ### Refill (event-driven, no timers)
 

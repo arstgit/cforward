@@ -18,15 +18,16 @@ import (
 // (-tlr 0 packet-loss filtering and -o "" stdout output are semantic requirements and stay fixed.)
 type CfstOpts struct {
 	URL     string
-	Threads int // -n
-	Tests   int // -t
-	DLCount int // -dn
-	DLTime  int // -dt
-	Top     int // -p: number of results added to the pool
+	Threads int  // -n
+	Tests   int  // -t
+	DLCount int  // -dn
+	DLTime  int  // -dt
+	Top     int  // -p: number of results added to the pool
+	DD      bool // -dd: skip the download speed test
 }
 
 func cfstArgs(o CfstOpts) []string {
-	return []string{
+	args := []string{
 		"-n", strconv.Itoa(o.Threads),
 		"-t", strconv.Itoa(o.Tests),
 		"-dn", strconv.Itoa(o.DLCount),
@@ -36,6 +37,13 @@ func cfstArgs(o CfstOpts) []string {
 		"-o", "", // do not write result.csv; parse stdout instead
 		"-url", o.URL,
 	}
+	if o.DD {
+		// Latency-only mode: sorts results by latency, speed column becomes 0.00.
+		// The live throughput EMA fills the speed score in after a few connections,
+		// so the ranking impact is minimal while per-round traffic drops to KBs.
+		args = append(args, "-dd")
+	}
+	return args
 }
 
 // Result rows start with an IPv4 address followed by:
