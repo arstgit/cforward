@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -46,6 +47,19 @@ func parseFlags() Config {
 	flag.Parse()
 	if c.cfstPath == "" {
 		c.cfstPath = c.cfstDir + "/cfst"
+	}
+	// 关键：cfst 相对路径必须转绝对。os/exec 设置 cmd.Dir 后，子进程先 chdir
+	// 再解析可执行文件路径，相对路径会在新目录下被二次解析（如 ./cfst/cfst 在
+	// chdir 到 ./cfst 后变成找 ./cfst/cfst/cfst → ENOTDIR）。
+	if !filepath.IsAbs(c.cfstDir) {
+		if abs, err := filepath.Abs(c.cfstDir); err == nil {
+			c.cfstDir = abs
+		}
+	}
+	if !filepath.IsAbs(c.cfstPath) {
+		if abs, err := filepath.Abs(c.cfstPath); err == nil {
+			c.cfstPath = abs
+		}
 	}
 	return c
 }

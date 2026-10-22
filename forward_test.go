@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -207,6 +209,31 @@ func echoRound(t *testing.T, br *bufio.Reader, w io.Writer, msg string) bool {
 }
 
 // ---- cfst stdout 解析 ----
+
+// 回归：相对路径 + cmd.Dir 的解析 bug（子进程 chdir 后相对路径被二次解析 → ENOTDIR）。
+// 用假脚本模拟 cfst（不执行真 cfst）。
+func TestRunCfstRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	cfstDir := filepath.Join(dir, "cfst")
+	if err := os.MkdirAll(cfstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(cfstDir, "cfst")
+	fake := "#!/bin/sh\nprintf '1 / 3 [bar] 可用: 1  IP 地址           已发送  已接收  丢包率  平均延迟  下载速度(MB/s)  地区码  \\n104.16.1.34       1       1       0.00    186.80    0.00            N/A     \\n'\n"
+	if err := os.WriteFile(script, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 复现部署形态：以 temp 目录为 cwd，传相对路径
+	t.Chdir(dir)
+	results, err := RunCfst(context.Background(), "./cfst", "./cfst/cfst", "https://speed.cloudflare.com/__down?bytes=3000000")
+	if err != nil {
+		t.Fatalf("RunCfst with relative paths failed: %v", err)
+	}
+	if len(results) != 1 || results[0].IP != "104.16.1.34" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
 
 func TestParseCfstOutput(t *testing.T) {
 	// 远端实测输出（进度条噪声 + 结果表），-dd 模式速度列为 0.00

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -57,6 +59,17 @@ func ParseCfstOutput(out []byte) ([]CfstResult, error) {
 // RunCfst 在 cfstDir 下执行 cfst，返回解析出的结果。
 // 轮次语义：解析出 ≥1 个 IP 才算成功轮。
 func RunCfst(ctx context.Context, cfstDir, cfstPath, url string) ([]CfstResult, error) {
+	// 关键：cmd.Dir 会让子进程先 chdir 再解析可执行文件路径，相对路径会被二次解析
+	// （./cfst/cfst 在 chdir 到 ./cfst 后变成找 ./cfst/cfst/cfst → ENOTDIR）。
+	// 在父进程内先转绝对（相对当前 cwd）。
+	var err error
+	if cfstDir, err = filepath.Abs(cfstDir); err != nil {
+		return nil, fmt.Errorf("cfst dir abs: %v", err)
+	}
+	if cfstPath, err = filepath.Abs(cfstPath); err != nil {
+		return nil, fmt.Errorf("cfst path abs: %v", err)
+	}
+
 	args := append(append([]string{}, cfstArgs...), "-url", url)
 	cmd := exec.CommandContext(ctx, cfstPath, args...)
 	cmd.Dir = cfstDir
@@ -65,14 +78,20 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath, url string) ([]CfstResult, 
 	out, err := cmd.Output()
 	slog.Debug("cfst exited", "err", err, "duration", time.Since(start), "stdout_bytes", len(out))
 
-	// 即使退出码非零，只要 stdout 里有结果行也算成功（cfst 部分场景返回码不可靠）
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("cfst %w", ctx.Err())
 		}
+		// 只有"已启动但非零退出"才值得尝试解析 stdout；
+		// fork/exec 失败（找不到文件、无权限等）直接报错，不混淆解析信息。
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("cfst exec failed: %w", err)
+		}
 		results, perr := ParseCfstOutput(out)
 		if perr != nil {
-			return nil, fmt.Errorf("cfst run failed: %v; output parse: %v", err, perr)
+			return nil, fmt.Errorf("cfst run failed (exit %d): %v; output parse: %v",
+				exitErr.ExitCode(), err, perr)
 		}
 		return results, nil
 	}
