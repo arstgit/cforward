@@ -124,12 +124,13 @@ Score = `0.4 × latency + 0.3 × speed + 0.2 × success + 0.1 × retry`, each no
 
 **Only active traffic is the gold standard.** A segment counts as a success only when the
 upstream sent data back with a real time span (`-min-active-span`, changing/ongoing flow)
-or in real volume (`-min-active-bytes`). TCP connectivity alone, a lone small response
-("just a 200"), a silent close, or a rejected connection never counts — such segments are
-failures, and the clearest dead signals (no data at all, quick close) additionally mark
-the IP dead for `-dead-skip`, so the next connection immediately moves on. Client-side
-faults and benign idle closes are neutral. Failures drive ConsecFail (score ×0.1 after 3)
-and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged IPs.
+or in real volume (`-min-active-bytes`). Any segment that ends without such traffic and is
+not a client-side fault — TCP-only silence, a lone small response ("just a 200"), a TLS
+handshake with no data, a silent close, a rejected connection — is a failure AND marks
+the IP dead for `-dead-skip`, so the very next connection moves on; retry storms never
+pile onto a dead IP. Only client-side faults are neutral. Failures drive ConsecFail (score
+×0.1 after 3) and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged
+IPs.
 
 Initial scores come from cfst's latency/download speed (U and R start at 1.0); live stats
 update via EMA (α=0.3, fed only by active segments) and fully take over after 5 samples.

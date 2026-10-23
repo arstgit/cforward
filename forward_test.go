@@ -516,10 +516,10 @@ func TestClassify(t *testing.T) {
 	}{
 		{"sustained flow", relayResult{upEOF: true}, 300, 1200, 3 * time.Second, true, false},
 		{"big volume burst", relayResult{upEOF: true}, 4096, 128 * 1024, 200 * time.Millisecond, true, false},
-		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false, false},
+		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false, true},
 		{"no data quick close", relayResult{upEOF: true}, 300, 0, 0, false, true},
 		{"rejected before send", relayResult{upEOF: true}, 0, 0, 0, false, true},
-		{"idle close", relayResult{upEOF: true}, 0, 0, 0, false, false}, // dur>=2s 由 res 带
+		{"idle close", relayResult{upEOF: true}, 0, 0, 0, false, true}, // dur>=2s 由 res 带
 		{"transport error", relayResult{upErr: errTest}, 300, 0, 0, false, true},
 		{"client rst", relayResult{clientErr: errTest}, 0, 0, 0, false, false},
 		{"client rst after traffic", relayResult{clientErr: errTest}, 1024, 200 * 1024, 4 * time.Second, true, false},
@@ -613,27 +613,30 @@ func TestTinyResponseNotActive(t *testing.T) {
 		return c, buf[:n]
 	}
 
-	// 前三段都撞 up1（分数还没被打折），每段都只拿到 100 字节小应答
-	for i := 0; i < 3; i++ {
-		if _, n := dial(); len(n) != 100 {
-			t.Fatalf("round %d: want 100B tiny response, got %dB", i, n)
-		}
-		time.Sleep(150 * time.Millisecond) // let the segment report land
-	}
-	p1, _ := poolTop(pool, "127.0.0.1")
-	if p1 == nil || p1.ConsecFail < 3 || !p1.penalized() {
-		t.Fatalf("up1 should be penalized after 3 tiny segments: %+v", p1)
-	}
-
-	// 第四段：up1 分数被打折 → 切到 up2，拿到足量数据（活跃）
-	if _, n := dial(); len(n) != 1500 {
-		t.Fatalf("after penalty: want 1500B from up2, got %dB", len(n))
+	// 第一段撞 up1：只回 100B 小应答 → tiny → 失败 + 拉黑
+	if _, n := dial(); len(n) != 100 {
+		t.Fatalf("round 1: want 100B tiny response, got %dB", len(n))
 	}
 	time.Sleep(150 * time.Millisecond) // let the segment report land
+	p1, _ := poolTop(pool, "127.0.0.1")
+	if p1 == nil || p1.CumFail == 0 || !p1.DeadUntil.After(time.Now()) {
+		t.Fatalf("up1 should be failed and dead-flagged after one tiny segment: %+v", p1)
+	}
+
+	// 第二段：up1 已被拉黑 → 直接落到 up2，拿到足量数据（活跃）
+	if _, n := dial(); len(n) != 1500 {
+		t.Fatalf("round 2: want 1500B from up2, got %dB", len(n))
+	}
+	time.Sleep(150 * time.Millisecond) // let the segment report land
+	if p1.Attempts != 1 {
+		t.Fatalf("up1 must not be dialed again while dead: attempts=%d", p1.Attempts)
+	}
 	p2, _ := poolTop(pool, "127.0.0.2")
 	if p2 == nil || p2.Successes == 0 {
 		t.Fatalf("up2 should have an active success: %+v", p2)
 	}
+	t.Logf("tiny→dead-skip→switch OK: up1 attempts=%d cum_fail=%d | up2 successes=%d",
+		p1.Attempts, p1.CumFail, p2.Successes)
 	t.Logf("tiny→penalized→switch OK: up1 consec=%d | up2 successes=%d", p1.ConsecFail, p2.Successes)
 }
 

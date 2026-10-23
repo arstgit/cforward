@@ -223,13 +223,12 @@ func (f *Forwarder) handle(client net.Conn) {
 			// Gold standard: ongoing changing traffic (upstream sent data across time
 			// or in volume). Only this feeds Successes and the speed EMA.
 			f.pool.ReportConn(used.IP, true, total, res.dur, retries)
-		case "client_err", "idle":
-			// Neutral: the client broke the connection, or it closed after idle time.
-			// Neither rewards nor penalizes the IP.
+		case "client_err":
+			// Neutral: the client broke the connection. Neither rewards nor penalizes.
 		default:
-			// Fail: up_err, no_data, no_response or tiny ("a lone 200"). Drives
-			// ConsecFail/CumFail; the clear dead signals additionally mark the IP dead
-			// so the next connection skips it immediately.
+			// Fail: up_err, no_data, idle, no_response or tiny. Drives ConsecFail/CumFail
+			// AND marks the IP dead so the next connection skips it immediately — no
+			// retry storms on a dead IP.
 			f.pool.ReportConn(used.IP, false, total, res.dur, retries)
 			if markDead {
 				f.pool.MarkDead(used.IP, f.deadSkip)
@@ -267,17 +266,19 @@ func (f *Forwarder) handle(client net.Conn) {
 
 // classify judges a finished segment. Only ACTIVE traffic is the gold standard:
 // the upstream sent data back with a real time span (ongoing, changing flow) or in
-// real volume. TCP connectivity alone, a lone small response (“just a 200”), a
-// silent close, or a rejected connection never counts as success.
+// real volume. Everything else that is not a client-side fault is a failure AND
+// marks the IP dead, so the very next connection skips it — a proxy that connects
+// but produces no usable traffic (silent close, TLS-handshake-only, rejected) is a
+// dead signal; waiting for 3 strikes wastes the client's retries on the same IP.
 //
 // Verdicts:
-//   - active:      real traffic flowed (u2c>0 and flowSpan/volume thresholds met) → success
-//   - up_err:      upstream-side transport error → failure + dead-skip + in-loop switch
-//   - no_data:     accepted TCP but nothing came back, ended quickly → failure + dead-skip
-//   - no_response: one-way only for a long time → failure (no dead-skip)
-//   - tiny:        only a small exchange (a lone 200) → failure (no dead-skip)
-//   - client_err:  client broke the connection → neutral
-//   - idle:        closed after idle time with no data → neutral
+//   - active:       real traffic flowed (u2c>0 and flowSpan/volume thresholds met) → success
+//   - up_err:       upstream-side transport error → failure + dead-skip + in-loop switch
+//   - no_data:      accepted TCP, nothing came back, ended quickly → failure + dead-skip
+//   - idle:         closed after silence with no data at all → failure + dead-skip
+//   - no_response:  one-way only, upstream never sent a byte → failure + dead-skip
+//   - tiny:         only a small exchange (a lone 200 / TLS handshake only) → failure + dead-skip
+//   - client_err:   client broke the connection → neutral (not the IP's fault)
 func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok, markDead bool) {
 	total := c2u + u2c
 	switch {
@@ -287,14 +288,14 @@ func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Dura
 		return "active", true, false
 	case res.clientErr != nil:
 		return "client_err", false, false
-	case total == 0 && res.dur >= 2*time.Second:
-		return "idle", false, false
-	case u2c == 0 && res.dur < 10*time.Second:
+	case total == 0 && res.dur < 2*time.Second:
 		return "no_data", false, true
+	case total == 0:
+		return "idle", false, true
 	case u2c == 0:
-		return "no_response", false, false
+		return "no_response", false, true
 	default:
-		return "tiny", false, false
+		return "tiny", false, true
 	}
 }
 
