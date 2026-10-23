@@ -790,3 +790,43 @@ func TestPreferProvenIP(t *testing.T) {
 	}
 	t.Logf("proven-first OK: unproven attempts=%d | proven attempts=%d", pA.Attempts, pB.Attempts)
 }
+
+// 僵尸清理：客户端关闭后上游永不关闭 → noDataTimeout 后主动关上游，段结束。
+func TestZombieCleanup(t *testing.T) {
+	port := freePort(t)
+	up := newFakeUpstream(t, listenOn(t, "127.0.0.1", port)) // echo 服务，永不主动关闭
+	defer up.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
+
+	fw := NewForwarder(pool, port, time.Second, 1*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte("ping"))
+	buf := make([]byte, 16)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	c.Read(buf) // echo 回来
+	c.Close()   // 客户端走人，上游 echo 连接还开着（僵尸）
+
+	// 无清理时段永不结束（Samples 不涨）；清理后 1s 超时内段结束
+	time.Sleep(2500 * time.Millisecond)
+	segs := 0
+	activeSegs.Range(func(_, _ any) bool { segs++; return true })
+	if segs != 0 {
+		t.Fatalf("zombie segment should have been cleaned up, active=%d", segs)
+	}
+	e, _ := poolTop(pool, "127.0.0.1")
+	if e == nil || e.Samples != 1 {
+		t.Fatalf("segment should have ended with a report: %+v", e)
+	}
+	t.Logf("zombie cleanup OK: active_segs=%d samples=%d", segs, e.Samples)
+}

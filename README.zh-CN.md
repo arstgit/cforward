@@ -83,6 +83,7 @@ go build -o cforward .
 | `-min-active-span` | `2s` | 或数据必须持续流动至少这么久（有变化的流量） |
 | `-dead-skip` | `60s` | 最近失败过的 IP 跳过时长 |
 | `-proven-window` | `15m` | 窗口内有活跃流量的 IP 优先拨号 |
+| `-admin-addr` | `127.0.0.1:18080` | HTTP 管理接口（JSON 状态）；留空关闭 |
 | `-status-interval` | `60s` | 状态块打印间隔 |
 | `-debug` | `false` | debug 日志 |
 

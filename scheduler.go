@@ -82,6 +82,13 @@ func (s *Scheduler) eval() {
 	go s.runOnce()
 }
 
+// Status returns a snapshot of the scheduler state (for the admin endpoint).
+func (s *Scheduler) Status() (running bool, lastRun time.Time, lastDur time.Duration, lastErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running, s.lastRun, s.lastDur, s.lastErr
+}
+
 // runOnce executes one cfst round and merges the results into the pool.
 func (s *Scheduler) runOnce() {
 	start := time.Now()

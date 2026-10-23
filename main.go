@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -59,6 +60,7 @@ type Config struct {
 	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with recent failures for this long
 	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
 	StatusInterval Duration `json:"status_interval"`
+	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
 	Debug          bool     `json:"debug"`
 }
 
@@ -86,6 +88,7 @@ func defaultConfig() Config {
 		DeadSkip:       Duration(60 * time.Second),
 		ProvenWindow:   Duration(15 * time.Minute),
 		StatusInterval: Duration(60 * time.Second),
+		AdminAddr:      "127.0.0.1:18080",
 	}
 }
 
@@ -180,6 +183,7 @@ func main() {
 	fs.DurationVar((*time.Duration)(&cfg.MinActiveSpan), "min-active-span", cfg.MinActiveSpan.Std(), "or data must keep flowing for at least this long (changing traffic)")
 	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with recent no-data/error failures for this long")
 	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
+	fs.StringVar(&cfg.AdminAddr, "admin-addr", cfg.AdminAddr, "HTTP admin endpoint (JSON status); empty disables")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -203,6 +207,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	startedAt := time.Now()
 
 	pool := NewPool(cfg.PoolFile, cfg.PoolMax, cfg.FailEvict)
 	if err := pool.Load(); err != nil {
@@ -233,10 +238,26 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				printStatus(&cfg, pool)
+				printStatus(&cfg, pool, sched)
 			}
 		}
 	}()
+
+	// HTTP admin endpoint.
+	if cfg.AdminAddr != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+			writeStatusJSON(w, &cfg, pool, sched, startedAt)
+		})
+		admin := &http.Server{Addr: cfg.AdminAddr, Handler: mux}
+		go func() {
+			slog.Info("admin endpoint listening", "addr", cfg.AdminAddr)
+			if err := admin.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("admin endpoint", "err", err)
+			}
+		}()
+		defer admin.Close()
+	}
 
 	<-ctx.Done()
 	slog.Info("shutting down")
@@ -244,12 +265,21 @@ func main() {
 }
 
 // printStatus prints a readable status block (Top-10 pool table + active forwards).
-func printStatus(cfg *Config, pool *Pool) {
+func printStatus(cfg *Config, pool *Pool, sched *Scheduler) {
 	top := pool.Top(10)
 	var b strings.Builder
 	fmt.Fprintf(&b, "── cforward status ──────────────────────────────\n")
-	fmt.Fprintf(&b, "  pool: %d IPs (min %d / max %d)    active conns: %d\n",
-		pool.Size(), cfg.PoolMin, cfg.PoolMax, activeConns.Load())
+	cfstState := "idle"
+	if running, _, lastDur, lastErr := sched.Status(); running {
+		cfstState = "running"
+	} else if lastErr != nil {
+		cfstState = "last round failed"
+	} else if lastDur > 0 {
+		cfstState = "last round " + lastDur.Round(time.Second).String() + " ago"
+	}
+	fmt.Fprintf(&b, "  pool: %d IPs (min %d / max %d)    active conns: %d    dead-skipped: %d    cfst: %s\n",
+		pool.Size(), cfg.PoolMin, cfg.PoolMax, activeConns.Load(),
+		pool.DeadSkippedCount(), cfstState)
 	if len(top) == 0 {
 		fmt.Fprintln(&b, "  (pool empty, waiting for the first cfst round…)")
 	} else {
@@ -302,3 +332,64 @@ func humanBytes(n int64) string {
 }
 
 func round2(v float64) float64 { return float64(int(v*100+0.5)) / 100 }
+
+// writeStatusJSON serves the admin /status endpoint.
+func writeStatusJSON(w http.ResponseWriter, cfg *Config, pool *Pool, sched *Scheduler, startedAt time.Time) {
+	running, lastRun, lastDur, lastErr := sched.Status()
+
+	top := pool.Top(20)
+	active := []map[string]any{}
+	activeSegs.Range(func(_, v any) bool {
+		s := v.(*segInfo)
+		age := time.Since(s.start)
+		up, down := s.c2u.Load(), s.u2c.Load()
+		active = append(active, map[string]any{
+			"client":      s.clientAddr,
+			"ip":          s.ip,
+			"dial_lat_ms": s.dialLatMS,
+			"age_sec":     age.Round(time.Millisecond).Seconds(),
+			"up_bytes":    up,
+			"down_bytes":  down,
+		})
+		return true
+	})
+
+	type cfstState struct {
+		Running      bool   `json:"running"`
+		LastRun      string `json:"last_run"`
+		LastDuration string `json:"last_duration"`
+		LastError    string `json:"last_error"`
+		NextRefill   string `json:"next_refill"` // approx: cooldown from lastRun when still insufficient
+	}
+	st := cfstState{Running: running}
+	if !lastRun.IsZero() {
+		st.LastRun = lastRun.Format(time.RFC3339)
+	}
+	if lastDur > 0 {
+		st.LastDuration = lastDur.Round(time.Millisecond).String()
+	}
+	if lastErr != nil {
+		st.LastError = lastErr.Error()
+	}
+
+	resp := map[string]any{
+		"version":     version,
+		"uptime_sec":  int64(time.Since(startedAt).Seconds()),
+		"listen":      cfg.Listen,
+		"target_port": cfg.TargetPort,
+		"pool": map[string]any{
+			"size":         pool.Size(),
+			"min":          cfg.PoolMin,
+			"max":          cfg.PoolMax,
+			"best_score":   round2(pool.BestScore()),
+			"proven":       pool.ProvenCount(cfg.ProvenWindow.Std()),
+			"dead_skipped": pool.DeadSkippedCount(),
+			"top":          top,
+		},
+		"active_conns":    activeConns.Load(),
+		"active_segments": active,
+		"cfst":            st,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}

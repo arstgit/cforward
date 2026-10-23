@@ -458,6 +458,34 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	p.notify()
 }
 
+// ProvenCount returns how many IPs have ACTIVE traffic within the window.
+func (p *Pool) ProvenCount(window time.Duration) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	now := time.Now()
+	for _, e := range p.entries {
+		if !e.LastActive.IsZero() && now.Sub(e.LastActive) <= window {
+			n++
+		}
+	}
+	return n
+}
+
+// DeadSkippedCount returns how many IPs are currently dead-flagged (skipped by dials).
+func (p *Pool) DeadSkippedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	now := time.Now()
+	for _, e := range p.entries {
+		if e.DeadUntil.After(now) {
+			n++
+		}
+	}
+	return n
+}
+
 // MarkDead flags an IP as temporarily dead: dialBest skips it until DeadUntil.
 // Called after any upstream-side failure (transport error or no-data segment) so
 // the next client connection immediately moves on instead of retrying a dead IP.

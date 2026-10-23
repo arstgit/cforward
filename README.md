@@ -95,6 +95,7 @@ fall back to defaults.
 | `-min-active-span` | `2s` | or data must keep flowing for at least this long (changing traffic) |
 | `-dead-skip` | `60s` | skip IPs with recent no-data/error failures for this long |
 | `-proven-window` | `15m` | IPs with ACTIVE traffic within this window are dialed first |
+| `-admin-addr` | `127.0.0.1:18080` | HTTP admin endpoint (JSON status); empty disables |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
 | `-debug` | `false` | enable debug logging |
@@ -180,6 +181,16 @@ The status block also lists every active forward with live throughput:
   active forwards: 2
   #    client                   upstream          age    speed        up       down     dial
   1    127.0.0.1:54420          172.64.53.76      12s    1.20M     1.7M     12.0M     93ms
+```
+
+## Admin endpoint
+
+`GET /status` on the admin address (loopback by default) returns a JSON snapshot:
+version, uptime, pool (size/top/proven/dead-skipped), active forwards with live byte
+counts, and cfst scheduler state:
+
+```sh
+curl -s 127.0.0.1:18080/status | jq .pool.top[0]
 ```
 
 ## Development

@@ -359,6 +359,33 @@ func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 	start := time.Now()
 	var wg sync.WaitGroup
 	errCh := make(chan dirErr, 2)
+	stop := make(chan struct{})
+	defer close(stop)
+
+	// Zombie guard: once the client has fully closed (clean EOF) and the upstream
+	// sends no NEW data within noDataTimeout, close the upstream so the segment
+	// ends instead of lingering forever (frees the fd and keeps the active list
+	// accurate). The client is gone, so this never penalizes the IP — the relay
+	// ends with a plain clientEOF verdict.
+	var clientEOFat atomic.Int64 // UnixNano when A saw the clean client EOF
+	var u2cAtEOF atomic.Int64    // u2c counter at that moment
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				t0 := clientEOFat.Load()
+				if t0 != 0 && seg.u2c.Load() == u2cAtEOF.Load() &&
+					time.Since(time.Unix(0, t0)) > f.noDataTimeout {
+					b.Close()
+					return
+				}
+			}
+		}
+	}()
 
 	// closeFor closes connections according to the failing side:
 	// client-side error → close both (client is gone, nothing to resume);
@@ -398,6 +425,10 @@ func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 						// Upstream closed cleanly: the whole relay is over.
 						a.Close()
 						b.Close()
+					} else {
+						// Clean client EOF: arm the zombie guard.
+						clientEOFat.Store(time.Now().UnixNano())
+						u2cAtEOF.Store(seg.u2c.Load())
 					}
 				} else {
 					// Read failed: the error belongs to the source side.
