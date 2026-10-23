@@ -144,7 +144,16 @@ After a completed round, refills wait at least `-cooldown`; never while a round 
 
 ## Logging
 
-Key events go through slog; a status block is printed every `-status-interval`:
+Key events go through slog; a status block is printed every `-status-interval`.
+Every relay segment is logged at info level on start and end, with dial latency,
+duration, up/down bytes, throughput, switch and retry counts:
+
+```
+time=... level=INFO msg="forward start" client=127.0.0.1:54420 ip=172.64.53.76 lat_ms=93 target_port=443
+time=... level=INFO msg="forward end" client=127.0.0.1:54420 ip=172.64.53.76 ok=true lat_ms=93 dur=367ms up_bytes=1753 down_bytes=207472 speed_mbps=0.57 switches=0 retries=0
+```
+
+The status block also lists every active forward with live throughput:
 
 ```
 ── cforward status ──────────────────────────────
@@ -152,6 +161,9 @@ Key events go through slog; a status block is printed every `-status-interval`:
   #    IP                     score    lat    speed
   1    162.159.39.83          68.6    92ms   1.6MB/s
   2    172.64.53.254          68.5    93ms   1.6MB/s
+  active forwards: 2
+  #    client                   upstream          age    speed        up       down     dial
+  1    127.0.0.1:54420          172.64.53.76      12s    1.20M     1.7M     12.0M     93ms
 ```
 
 ## Development

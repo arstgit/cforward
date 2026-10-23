@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -229,7 +230,7 @@ func main() {
 	pool.Close()
 }
 
-// printStatus prints a readable status block (Top-10 table).
+// printStatus prints a readable status block (Top-10 pool table + active forwards).
 func printStatus(cfg *Config, pool *Pool) {
 	top := pool.Top(10)
 	var b strings.Builder
@@ -245,5 +246,46 @@ func printStatus(cfg *Config, pool *Pool) {
 				i+1, e.IP, e.Score(), e.latency(), e.speed())
 		}
 	}
+
+	// Active relay segments with live throughput.
+	var segs []*segInfo
+	activeSegs.Range(func(_, v any) bool {
+		segs = append(segs, v.(*segInfo))
+		return true
+	})
+	sort.Slice(segs, func(i, j int) bool { return segs[i].start.Before(segs[j].start) })
+	fmt.Fprintf(&b, "  active forwards: %d\n", len(segs))
+	if len(segs) == 0 {
+		fmt.Fprintln(&b, "  (none)")
+	} else {
+		fmt.Fprintf(&b, "  %-3s  %-22s  %-16s  %7s  %9s  %9s  %9s  %7s\n",
+			"#", "client", "upstream", "age", "speed", "up", "down", "dial")
+		for i, s := range segs {
+			age := time.Since(s.start)
+			up, down := s.c2u.Load(), s.u2c.Load()
+			speed := 0.0
+			if age > 0 {
+				speed = float64(up+down) / age.Seconds() / 1e6 // MB/s
+			}
+			fmt.Fprintf(&b, "  %-3d  %-22s  %-16s  %6s  %7.2fM  %8s  %8s  %5dms\n",
+				i+1, s.clientAddr, s.ip, age.Round(time.Second), speed,
+				humanBytes(up), humanBytes(down), s.dialLatMS)
+		}
+	}
 	fmt.Print(b.String())
 }
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0fK", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
+func round2(v float64) float64 { return float64(int(v*100+0.5)) / 100 }

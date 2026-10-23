@@ -90,8 +90,9 @@ func tuneUpstream(conn *net.TCPConn, userTimeout time.Duration) {
 
 // dialBest dials candidates in score order, skipping the IPs in skip (IPs that
 // failed are added to skip so they are not retried within one client connection).
-// Returns the connection, the winning IP, and the number of failed attempts.
-func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int) {
+// Returns the connection, the winning IP, the failed-attempt count, and the dial
+// latency of the winning IP in ms.
+func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, float64) {
 	candidates := f.pool.Candidates()
 	retries := 0
 	for _, cand := range candidates {
@@ -114,40 +115,82 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int) {
 			tuneUpstream(tc, f.noDataTimeout)
 		}
 		f.pool.ReportDial(ip, true, latMs)
-		return conn, cand, retries
+		return conn, cand, retries, latMs
 	}
-	return nil, nil, retries
+	return nil, nil, retries, 0
 }
+
+// segInfo tracks one live relay segment (for per-segment logs and the status block).
+// Byte counters are atomic: copyDir goroutines write them while the status block reads.
+type segInfo struct {
+	client     net.Conn
+	clientAddr string
+	ip         string
+	dialLatMS  int64 // dial latency of this segment's upstream, ms
+	start      time.Time
+	c2u        atomic.Int64 // client→upstream bytes
+	u2c        atomic.Int64 // upstream→client bytes
+}
+
+// activeSegs holds all live relay segments, keyed by the client connection.
+var activeSegs sync.Map
+
+func newSeg(client net.Conn, clientAddr, ip string, latMs float64) *segInfo {
+	seg := &segInfo{
+		client:     client,
+		clientAddr: clientAddr,
+		ip:         ip,
+		dialLatMS:  int64(latMs),
+		start:      time.Now(),
+	}
+	activeSegs.Store(client, seg)
+	return seg
+}
+
+func (s *segInfo) done() { activeSegs.Delete(s.client) }
 
 // handle drives one client connection. Core loop:
 // dial (fall back on failure) → relay → upstream breaks → re-dial the next-best IP
 // → resume relaying, until the client disconnects.
 func (f *Forwarder) handle(client net.Conn) {
 	defer client.Close()
+	defer activeSegs.Delete(client)
 	activeConns.Add(1)
 	defer activeConns.Add(-1)
 	clientAddr := client.RemoteAddr().String()
 
 	skip := make(map[string]bool)
-	upstream, used, retries := f.dialBest(skip)
+	upstream, used, retries, latMs := f.dialBest(skip)
 	if upstream == nil {
 		slog.Warn("no candidates, rejecting", "client", clientAddr)
 		return
 	}
 
+	seg := newSeg(client, clientAddr, used.IP, latMs)
+	slog.Info("forward start", "client", clientAddr, "ip", used.IP,
+		"lat_ms", seg.dialLatMS, "target_port", f.targetPort)
 	switchCount := 0
 	for {
-		res := f.relay(client, upstream)
+		res := f.relay(client, upstream, seg)
 		upstream.Close()
+		seg.done()
 
+		c2u, u2c := seg.c2u.Load(), seg.u2c.Load()
 		// ok = no upstream-side error (client-side disconnects do not count against the IP)
-		f.pool.ReportConn(used.IP, res.upErr == nil, res.clientBytes, res.dur, retries)
+		ok := res.upErr == nil
+		speed := 0.0
+		if res.dur > 0 {
+			speed = float64(c2u+u2c) / res.dur.Seconds() / 1e6 // MB/s
+		}
+		f.pool.ReportConn(used.IP, ok, c2u, res.dur, retries)
+		slog.Info("forward end",
+			"client", clientAddr, "ip", used.IP, "ok", ok,
+			"lat_ms", seg.dialLatMS, "dur", res.dur.Round(time.Millisecond),
+			"up_bytes", c2u, "down_bytes", u2c,
+			"speed_mbps", round2(speed), "switches", switchCount, "retries", retries)
 
 		// Upstream ended normally (EOF) or the client is gone → connection over.
 		if res.upErr == nil || res.clientErr != nil || res.upEOF {
-			slog.Debug("connection ended", "client", clientAddr, "ip", used.IP,
-				"up_err", res.upErr, "client_err", res.clientErr,
-				"client_eof", res.clientEOF, "up_eof", res.upEOF)
 			return
 		}
 
@@ -157,24 +200,26 @@ func (f *Forwarder) handle(client net.Conn) {
 		slog.Info("upstream broken, switching", "from", used.IP,
 			"client", clientAddr, "err", res.upErr, "switch_count", switchCount)
 
-		newUp, newUsed, r := f.dialBest(skip)
+		newUp, newUsed, r, lat := f.dialBest(skip)
 		if newUp == nil {
 			slog.Warn("no more candidates, dropping client", "client", clientAddr,
 				"switch_count", switchCount)
 			return
 		}
 		upstream, used, retries = newUp, newUsed, r
+		seg = newSeg(client, clientAddr, used.IP, lat)
+		slog.Info("forward start", "client", clientAddr, "ip", used.IP,
+			"lat_ms", seg.dialLatMS, "switch_count", switchCount)
 	}
 }
 
 // relayResult is the outcome of one relay segment.
 type relayResult struct {
-	clientBytes int64
-	dur         time.Duration
-	upErr       error // upstream-side error → re-dial and continue
-	clientErr   error // client-side error → give up
-	clientEOF   bool  // clean client EOF (half-close; client can still receive)
-	upEOF       bool  // clean upstream EOF
+	dur       time.Duration
+	upErr     error // upstream-side error → re-dial and continue
+	clientErr error // client-side error → give up
+	clientEOF bool  // clean client EOF (half-close; client can still receive)
+	upEOF     bool  // clean upstream EOF
 }
 
 // relay copies bytes in both directions until both directions end.
@@ -195,10 +240,9 @@ type relayResult struct {
 //
 // The upstream socket carries TCP_USER_TIMEOUT: on a dead path reads/writes error
 // within ~noDataTimeout (upErr); idle connections on a live path are never killed.
-func (f *Forwarder) relay(a, b net.Conn) relayResult {
+func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 	start := time.Now()
 	var wg sync.WaitGroup
-	var c2u, u2c int64
 	errCh := make(chan dirErr, 2)
 
 	// closeFor closes connections according to the failing side:
@@ -213,10 +257,9 @@ func (f *Forwarder) relay(a, b net.Conn) relayResult {
 		}
 	}
 
-	copyDir := func(dir string, src, dst net.Conn, counter *int64) {
+	copyDir := func(dir string, src, dst net.Conn) {
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
-		var total int64
 		for {
 			nr, rerr := src.Read(buf)
 			if nr > 0 {
@@ -226,8 +269,11 @@ func (f *Forwarder) relay(a, b net.Conn) relayResult {
 					closeFor(otherSide(dir))
 					return
 				}
-				total += int64(nr)
-				*counter = total
+				if dir == "client" {
+					seg.c2u.Add(int64(nr))
+				} else {
+					seg.u2c.Add(int64(nr))
+				}
 			}
 			if rerr != nil {
 				if rerr == io.EOF {
@@ -248,11 +294,11 @@ func (f *Forwarder) relay(a, b net.Conn) relayResult {
 	}
 
 	wg.Add(2)
-	go copyDir("client", a, b, &c2u) // read client → write upstream
-	go copyDir("up", b, a, &u2c)     // read upstream → write client
+	go copyDir("client", a, b) // read client → write upstream
+	go copyDir("up", b, a)     // read upstream → write client
 	wg.Wait()
 
-	res := relayResult{clientBytes: c2u, dur: time.Since(start)}
+	res := relayResult{dur: time.Since(start)}
 	// Combine both directions. Critical rules:
 	// 1. errors.Is(net.ErrClosed) is a fake error caused by our own closes → ignore.
 	// 2. If any real error exists, every EOF is suspect (our closes can produce fake
