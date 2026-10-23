@@ -57,6 +57,7 @@ type Config struct {
 	MinActiveBytes int64    `json:"min_active_bytes"` // a segment must move this much to count as success
 	MinActiveSpan  Duration `json:"min_active_span"`  // ...or keep flowing for at least this long
 	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with recent failures for this long
+	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
 	StatusInterval Duration `json:"status_interval"`
 	Debug          bool     `json:"debug"`
 }
@@ -83,6 +84,7 @@ func defaultConfig() Config {
 		MinActiveBytes: 64 * 1024,
 		MinActiveSpan:  Duration(2 * time.Second),
 		DeadSkip:       Duration(60 * time.Second),
+		ProvenWindow:   Duration(15 * time.Minute),
 		StatusInterval: Duration(60 * time.Second),
 	}
 }
@@ -177,6 +179,7 @@ func main() {
 	fs.Int64Var(&cfg.MinActiveBytes, "min-active-bytes", cfg.MinActiveBytes, "a segment must move this many bytes to count as success")
 	fs.DurationVar((*time.Duration)(&cfg.MinActiveSpan), "min-active-span", cfg.MinActiveSpan.Std(), "or data must keep flowing for at least this long (changing traffic)")
 	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with recent no-data/error failures for this long")
+	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -218,7 +221,7 @@ func main() {
 	}
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
-		cfg.DeadSkip.Std(), cfg.MinActiveSpan.Std(), cfg.MinActiveBytes)
+		cfg.DeadSkip.Std(), cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(), cfg.MinActiveBytes)
 	go fw.Serve(ctx, ln)
 
 	// Periodic status block.

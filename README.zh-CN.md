@@ -82,6 +82,7 @@ go build -o cforward .
 | `-min-active-bytes` | `65536` | 段必须传输这么多字节才算成功 |
 | `-min-active-span` | `2s` | 或数据必须持续流动至少这么久（有变化的流量） |
 | `-dead-skip` | `60s` | 最近失败过的 IP 跳过时长 |
+| `-proven-window` | `15m` | 窗口内有活跃流量的 IP 优先拨号 |
 | `-status-interval` | `60s` | 状态块打印间隔 |
 | `-debug` | `false` | debug 日志 |
 
@@ -115,6 +116,7 @@ go build -o cforward .
 下一个连接直接跳过，重试风暴不会堆积在死 IP 上。只有客户端自身过错为中性。
 失败驱动连败惩罚（3 次分数 ×0.1）与累计淘汰（`-fail-evict` 次移出）；
 新一轮 cfst 会解除死标记。速度 EMA 只由活跃段喂入。
+拨号优先选**近期跑过活跃流量的 IP**（`-proven-window` 内）——切换落到验证过的好路径，而不是未验证的高分 IP。客户端连上后一字节不发（`idle`）为中性——换 IP 救不了沉默的客户端。
 
 ### 流量：默认不下载测速
 

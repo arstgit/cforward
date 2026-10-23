@@ -60,6 +60,7 @@ type IPEntry struct {
 
 	LastSeenRound int       `json:"last_seen_round"` // last cfst round this IP appeared in
 	DeadUntil     time.Time `json:"dead_until"`      // dials skip this IP until this time (no-data failures)
+	LastActive    time.Time `json:"last_active"`     // last segment with ACTIVE traffic (proven-good preference)
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -436,6 +437,7 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	} else {
 		e.Successes++
 		e.ConsecFail = 0
+		e.LastActive = time.Now() // proven: carried real traffic
 	}
 	if ok && duration > 0 && bytes > 0 {
 		speed := float64(bytes) / duration.Seconds() / 1e6 // MB/s

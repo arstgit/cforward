@@ -19,6 +19,7 @@
   "min_active_bytes": 65536,
   "min_active_span": "2s",
   "dead_skip": "60s",
+  "proven_window": "15m",
   "status_interval": "60s",
   "debug": false
 }

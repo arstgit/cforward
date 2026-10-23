@@ -94,6 +94,7 @@ fall back to defaults.
 | `-min-active-bytes` | `65536` | a segment must move this many bytes to count as success |
 | `-min-active-span` | `2s` | or data must keep flowing for at least this long (changing traffic) |
 | `-dead-skip` | `60s` | skip IPs with recent no-data/error failures for this long |
+| `-proven-window` | `15m` | IPs with ACTIVE traffic within this window are dialed first |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
 | `-debug` | `false` | enable debug logging |
@@ -130,7 +131,10 @@ handshake with no data, a silent close, a rejected connection — is a failure A
 the IP dead for `-dead-skip`, so the very next connection moves on; retry storms never
 pile onto a dead IP. Only client-side faults are neutral. Failures drive ConsecFail (score
 ×0.1 after 3) and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged
-IPs.
+IPs. Dials prefer IPs **proven by recent active traffic** (`-proven-window`): a
+mid-session switch lands on a known-good path instead of an untested high-score one.
+A client that connects but never sends a byte (`idle`) is neutral — switching cannot
+help a silent client.
 
 Initial scores come from cfst's latency/download speed (U and R start at 1.0); live stats
 update via EMA (α=0.3, fed only by active segments) and fully take over after 5 samples.

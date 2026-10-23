@@ -93,7 +93,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -177,7 +177,7 @@ func TestDialFallback(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -505,7 +505,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 // classify 单元测试：只有"有变化的流量"才算成功。
 func TestClassify(t *testing.T) {
-	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 2*time.Second, 64*1024)
+	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 2*time.Second, time.Hour, 64*1024)
 	cases := []struct {
 		name     string
 		res      relayResult
@@ -519,13 +519,13 @@ func TestClassify(t *testing.T) {
 		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false, true},
 		{"no data quick close", relayResult{upEOF: true}, 300, 0, 0, false, true},
 		{"rejected before send", relayResult{upEOF: true}, 0, 0, 0, false, true},
-		{"idle close", relayResult{upEOF: true}, 0, 0, 0, false, true}, // dur>=2s 由 res 带
+		{"client silent", relayResult{upEOF: true}, 0, 0, 0, false, false},
 		{"transport error", relayResult{upErr: errTest}, 300, 0, 0, false, true},
 		{"client rst", relayResult{clientErr: errTest}, 0, 0, 0, false, false},
 		{"client rst after traffic", relayResult{clientErr: errTest}, 1024, 200 * 1024, 4 * time.Second, true, false},
 	}
 	for _, c := range cases {
-		if c.name == "idle close" {
+		if c.name == "client silent" {
 			c.res.dur = 5 * time.Second
 		}
 		v, ok, dead := f.classify(c.res, c.up, c.down, c.span)
@@ -593,7 +593,7 @@ func TestTinyResponseNotActive(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1024)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1024)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -665,7 +665,7 @@ func TestNoDataMarkedDead(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -720,7 +720,7 @@ func TestClientRSTNeutral(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -743,3 +743,50 @@ func TestClientRSTNeutral(t *testing.T) {
 }
 
 var errTest = errors.New("test error")
+
+// 优先已验证 IP：高分但从未跑过活跃流量的 IP 排在"近期有活跃流量"的 IP 之后。
+func TestPreferProvenIP(t *testing.T) {
+	port := freePort(t)
+	upA := newFakeUpstream(t, listenOn(t, "127.0.0.1", port))
+	defer upA.ln.Close()
+	upB := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
+	defer upB.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "127.0.0.1", Latency: 5, Speed: 60},  // 更高分但未验证
+		{IP: "127.0.0.2", Latency: 500, Speed: 5}, // 低分但最近有活跃流量
+	})
+	pool.mu.Lock()
+	pool.entries["127.0.0.2"].LastActive = time.Now()
+	pool.mu.Unlock()
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	br := bufio.NewReader(client)
+	if !echoRound(t, br, client, "hello-proven") {
+		t.Fatal("no echo; proven IP not reached")
+	}
+	upB.closeConns() // end the segment so stats land
+	time.Sleep(150 * time.Millisecond)
+
+	pA, _ := poolTop(pool, "127.0.0.1")
+	pB, _ := poolTop(pool, "127.0.0.2")
+	if pA == nil || pA.Attempts != 0 {
+		t.Fatalf("unproven high-score IP must not be dialed first: %+v", pA)
+	}
+	if pB == nil || pB.Attempts != 1 {
+		t.Fatalf("proven IP should be dialed first: %+v", pB)
+	}
+	t.Logf("proven-first OK: unproven attempts=%d | proven attempts=%d", pA.Attempts, pB.Attempts)
+}

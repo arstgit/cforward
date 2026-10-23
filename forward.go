@@ -29,17 +29,19 @@ type Forwarder struct {
 	dialTimeout    time.Duration
 	noDataTimeout  time.Duration
 	deadSkip       time.Duration // IPs with no-data/error failures are skipped for this long
+	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
 	minActiveBytes int64         // a segment must carry this much traffic to count as success
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip, minActiveSpan time.Duration, minActiveBytes int64) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip, minActiveSpan, provenWindow time.Duration, minActiveBytes int64) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
 		dialTimeout:    dialTimeout,
 		noDataTimeout:  noDataTimeout,
 		deadSkip:       deadSkip,
+		provenWindow:   provenWindow,
 		minActiveSpan:  minActiveSpan,
 		minActiveBytes: minActiveBytes,
 	}
@@ -94,21 +96,16 @@ func tuneUpstream(conn *net.TCPConn, userTimeout time.Duration) {
 	}
 }
 
-// dialBest dials candidates in score order, skipping the IPs in skip (IPs that
-// failed are added to skip so they are not retried within one client connection).
+// dialBest dials candidates in two passes: first the IPs proven by recent ACTIVE
+// traffic (they actually serve data, not just score well), then the rest — both in
+// score order, skipping the IPs in skip (failed IPs are added to skip so they are
+// not retried within one client connection).
 // Returns the connection, the winning IP, the failed-attempt count, and the dial
 // latency of the winning IP in ms.
 func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, float64) {
 	candidates := f.pool.Candidates()
 	retries := 0
-	for _, cand := range candidates {
-		if skip[cand.IP] {
-			continue
-		}
-		if time.Now().Before(cand.DeadUntil) {
-			// Temporarily dead (recent no-data/error failure): skip without counting a retry.
-			continue
-		}
+	tryDial := func(cand *IPEntry) (net.Conn, float64, bool) {
 		ip := cand.IP
 		start := time.Now()
 		conn, err := net.DialTimeout("tcp",
@@ -119,13 +116,40 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 			f.pool.ReportDial(ip, false, latMs)
 			skip[ip] = true
 			retries++
-			continue
+			return nil, latMs, false
 		}
 		if tc, ok := conn.(*net.TCPConn); ok {
 			tuneUpstream(tc, f.noDataTimeout)
 		}
 		f.pool.ReportDial(ip, true, latMs)
-		return conn, cand, retries, latMs
+		return conn, latMs, true
+	}
+
+	proven := func(cand *IPEntry) bool {
+		return !cand.LastActive.IsZero() && time.Since(cand.LastActive) <= f.provenWindow
+	}
+	// Pass 1: proven-good IPs (recent active traffic). They serve real data, so a
+	// mid-session switch lands on a known-good path instead of an untested one.
+	for _, cand := range candidates {
+		if skip[cand.IP] || !proven(cand) {
+			continue
+		}
+		if conn, lat, ok := tryDial(cand); ok {
+			return conn, cand, retries, lat
+		}
+	}
+	// Pass 2: everything else (unproven fallbacks and cold-start).
+	for _, cand := range candidates {
+		if skip[cand.IP] {
+			continue
+		}
+		if time.Now().Before(cand.DeadUntil) {
+			// Temporarily dead (recent no-data/error failure): skip without counting a retry.
+			continue
+		}
+		if conn, lat, ok := tryDial(cand); ok {
+			return conn, cand, retries, lat
+		}
 	}
 	return nil, nil, retries, 0
 }
@@ -223,8 +247,9 @@ func (f *Forwarder) handle(client net.Conn) {
 			// Gold standard: ongoing changing traffic (upstream sent data across time
 			// or in volume). Only this feeds Successes and the speed EMA.
 			f.pool.ReportConn(used.IP, true, total, res.dur, retries)
-		case "client_err":
-			// Neutral: the client broke the connection. Neither rewards nor penalizes.
+		case "client_err", "idle":
+			// Neutral: the client broke the connection, or connected but never sent a
+			// byte. Neither rewards nor penalizes the IP.
 		default:
 			// Fail: up_err, no_data, idle, no_response or tiny. Drives ConsecFail/CumFail
 			// AND marks the IP dead so the next connection skips it immediately — no
@@ -289,9 +314,13 @@ func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Dura
 	case res.clientErr != nil:
 		return "client_err", false, false
 	case total == 0 && res.dur < 2*time.Second:
+		// Accepted TCP but closed immediately with zero bytes: a rejecting/dead
+		// endpoint — failure + dead-skip.
 		return "no_data", false, true
 	case total == 0:
-		return "idle", false, true
+		// The client connected but never sent a byte for a while: switching IPs
+		// cannot help a silent client, and the IP did nothing wrong — neutral.
+		return "idle", false, false
 	case u2c == 0:
 		return "no_response", false, true
 	default:
