@@ -59,6 +59,7 @@ type IPEntry struct {
 	CumFail    int `json:"cum_fail"`    // cumulative failures (eviction trigger)
 
 	LastSeenRound int       `json:"last_seen_round"` // last cfst round this IP appeared in
+	DeadUntil     time.Time `json:"dead_until"`      // dials skip this IP until this time (no-data failures)
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -90,16 +91,13 @@ func (e *IPEntry) speed() float64 {
 	return e.SpeedEMA
 }
 
-// successRate is the share of dials that succeeded and whose transport did not fail.
+// successRate is the share of dial attempts that led to ACTIVE traffic segments
+// (the gold standard). TCP-only connectivity never counts.
 func (e *IPEntry) successRate() float64 {
 	if e.Attempts == 0 {
 		return 1.0
 	}
-	ok := float64(e.Successes - e.TransFail)
-	if ok < 0 {
-		ok = 0
-	}
-	return ok / float64(e.Attempts)
+	return float64(e.Successes) / float64(e.Attempts)
 }
 
 // retryRate is attributed retries over (retries + successful connections).
@@ -286,6 +284,7 @@ func (p *Pool) AddCfstResults(results []CfstResult) (added, refreshed int) {
 			e.BaseSpeed = r.Speed
 			e.HasBase = true
 			e.LastSeenRound = round
+			e.DeadUntil = time.Time{} // fresh measurement revives a dead-flagged IP
 			e.UpdatedAt = now
 			refreshed++
 		}
@@ -375,6 +374,9 @@ func (p *Pool) Top(n int) []*IPEntry {
 }
 
 // ReportDial records one dial result. When ok, latencyMs is the dial duration.
+// ReportDial records one dial result. Dial connectivity alone is NOT a goodness
+// signal — only segments with active traffic (ReportConn ok=true) count as
+// successes. A successful dial only feeds the latency EMA.
 func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 	p.mu.Lock()
 	e := p.entries[ip]
@@ -384,8 +386,6 @@ func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 	}
 	e.Attempts++
 	if ok {
-		e.Successes++
-		e.ConsecFail = 0
 		if e.Samples == 0 {
 			e.LatEMA = latencyMs
 		} else {
@@ -416,8 +416,10 @@ func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 }
 
 // ReportConn records one established and finished connection segment.
-// ok: transport ended without errors; bytes: client→upstream total bytes;
-// duration: segment duration; retries: downgrade dials during setup (attributed to the final IP).
+// ok: the segment carried ACTIVE traffic (the gold standard); bytes: total bytes
+// both directions; duration: segment duration; retries: downgrade dials during
+// setup (attributed to the final IP). Only ok segments feed Successes and the
+// speed EMA; failures drive ConsecFail/CumFail towards penalty and eviction.
 func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duration, retries int) {
 	p.mu.Lock()
 	e := p.entries[ip]
@@ -432,9 +434,10 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 		e.ConsecFail++
 		e.CumFail++
 	} else {
+		e.Successes++
 		e.ConsecFail = 0
 	}
-	if duration > 0 && bytes > 0 {
+	if ok && duration > 0 && bytes > 0 {
 		speed := float64(bytes) / duration.Seconds() / 1e6 // MB/s
 		if e.Samples == 1 {
 			e.SpeedEMA = speed
@@ -449,6 +452,21 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 		p.Evict(ip, "cumulative failures")
 		return
 	}
+	p.markDirty()
+	p.notify()
+}
+
+// MarkDead flags an IP as temporarily dead: dialBest skips it until DeadUntil.
+// Called after any upstream-side failure (transport error or no-data segment) so
+// the next client connection immediately moves on instead of retrying a dead IP.
+func (p *Pool) MarkDead(ip string, deadSkip time.Duration) {
+	p.mu.Lock()
+	e := p.entries[ip]
+	if e != nil {
+		e.DeadUntil = time.Now().Add(deadSkip)
+		e.UpdatedAt = time.Now()
+	}
+	p.mu.Unlock()
 	p.markDirty()
 	p.notify()
 }

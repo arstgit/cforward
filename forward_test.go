@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -48,6 +49,16 @@ func newFakeUpstream(t *testing.T, ln net.Listener) *fakeUpstream {
 	return u
 }
 
+// closeConns closes the accepted connections (ends open relay segments) without
+// touching the listener.
+func (u *fakeUpstream) closeConns() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, c := range u.conns {
+		c.Close()
+	}
+}
+
 // die simulates a dead IP: closes the listener (new dials are refused) and kills all
 // connections with linger(0). Note: on Linux linger(0) may send RST (forwarder resumes
 // on the same client connection) or FIN (forwarder treats it as a clean server close and
@@ -82,7 +93,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -125,6 +136,8 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 	if !recovered {
 		t.Fatal("no echo after upstream death; forwarder did not recover")
 	}
+	// End the live up2 segment so its verdict is reported before we assert.
+	up2.closeConns()
 
 	// Verify stats: up1 has a transport or dial failure; up2 was dialed successfully and took over
 	time.Sleep(200 * time.Millisecond)
@@ -164,7 +177,7 @@ func TestDialFallback(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -182,6 +195,7 @@ func TestDialFallback(t *testing.T) {
 	if !echoRound(t, br, client, "hello-fallback") {
 		t.Fatal("no echo; fallback dial failed")
 	}
+	up2.closeConns() // end the segment so its verdict is reported
 
 	time.Sleep(100 * time.Millisecond)
 	p1, _ := poolTop(pool, "127.0.0.1")
@@ -486,3 +500,243 @@ func freePort(t *testing.T) int {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// ---- Active-traffic gold standard ----
+
+// classify 单元测试：只有"有变化的流量"才算成功。
+func TestClassify(t *testing.T) {
+	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 2*time.Second, 64*1024)
+	cases := []struct {
+		name     string
+		res      relayResult
+		up, down int64
+		span     time.Duration
+		wantOK   bool
+		wantDead bool
+	}{
+		{"sustained flow", relayResult{upEOF: true}, 300, 1200, 3 * time.Second, true, false},
+		{"big volume burst", relayResult{upEOF: true}, 4096, 128 * 1024, 200 * time.Millisecond, true, false},
+		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false, false},
+		{"no data quick close", relayResult{upEOF: true}, 300, 0, 0, false, true},
+		{"rejected before send", relayResult{upEOF: true}, 0, 0, 0, false, true},
+		{"idle close", relayResult{upEOF: true}, 0, 0, 0, false, false}, // dur>=2s 由 res 带
+		{"transport error", relayResult{upErr: errTest}, 300, 0, 0, false, true},
+		{"client rst", relayResult{clientErr: errTest}, 0, 0, 0, false, false},
+		{"client rst after traffic", relayResult{clientErr: errTest}, 1024, 200 * 1024, 4 * time.Second, true, false},
+	}
+	for _, c := range cases {
+		if c.name == "idle close" {
+			c.res.dur = 5 * time.Second
+		}
+		v, ok, dead := f.classify(c.res, c.up, c.down, c.span)
+		if ok != c.wantOK || dead != c.wantDead {
+			t.Errorf("%s: verdict=%s ok=%v dead=%v want ok=%v dead=%v", c.name, v, ok, dead, c.wantOK, c.wantDead)
+		}
+	}
+}
+
+// 只有活跃段才算成功：拨号成功但无活跃流量 → U=0。
+func TestTCPConnectivityNotSuccess(t *testing.T) {
+	e := &IPEntry{Attempts: 5, Successes: 0} // 5 次拨号全部连通，但没有任何活跃段
+	if e.successRate() != 0 {
+		t.Fatalf("TCP-only connectivity must not count: rate=%v", e.successRate())
+	}
+	e2 := &IPEntry{Attempts: 5, Successes: 3}
+	if e2.successRate() != 0.6 {
+		t.Fatalf("rate: %v", e2.successRate())
+	}
+}
+
+// 端到端：只回一个小应答的 IP 不算好，连续小应答后分数被打折、切到真能传流量的 IP。
+func TestTinyResponseNotActive(t *testing.T) {
+	port := freePort(t)
+
+	// up1: 收到请求只回 100 字节就关闭（"一个 200"）
+	ln1 := listenOn(t, "127.0.0.1", port)
+	defer ln1.Close()
+	go func() {
+		for {
+			c, err := ln1.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				c.Read(buf)
+				c.Write(make([]byte, 100))
+				c.Close()
+			}(c)
+		}
+	}()
+
+	// up2: 回 1500 字节（≥1024 阈值 → 活跃）
+	ln2 := listenOn(t, "127.0.0.2", port)
+	defer ln2.Close()
+	go func() {
+		for {
+			c, err := ln2.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				c.Read(buf)
+				c.Write(make([]byte, 1500))
+				c.Close()
+			}(c)
+		}
+	}()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "127.0.0.1", Latency: 10, Speed: 50}, // 高分
+		{IP: "127.0.0.2", Latency: 500, Speed: 5},
+	})
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1024)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	dial := func() (net.Conn, []byte) {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte("ping"))
+		buf := make([]byte, 2048)
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := c.Read(buf)
+		c.Close()
+		return c, buf[:n]
+	}
+
+	// 前三段都撞 up1（分数还没被打折），每段都只拿到 100 字节小应答
+	for i := 0; i < 3; i++ {
+		if _, n := dial(); len(n) != 100 {
+			t.Fatalf("round %d: want 100B tiny response, got %dB", i, n)
+		}
+		time.Sleep(150 * time.Millisecond) // let the segment report land
+	}
+	p1, _ := poolTop(pool, "127.0.0.1")
+	if p1 == nil || p1.ConsecFail < 3 || !p1.penalized() {
+		t.Fatalf("up1 should be penalized after 3 tiny segments: %+v", p1)
+	}
+
+	// 第四段：up1 分数被打折 → 切到 up2，拿到足量数据（活跃）
+	if _, n := dial(); len(n) != 1500 {
+		t.Fatalf("after penalty: want 1500B from up2, got %dB", len(n))
+	}
+	time.Sleep(150 * time.Millisecond) // let the segment report land
+	p2, _ := poolTop(pool, "127.0.0.2")
+	if p2 == nil || p2.Successes == 0 {
+		t.Fatalf("up2 should have an active success: %+v", p2)
+	}
+	t.Logf("tiny→penalized→switch OK: up1 consec=%d | up2 successes=%d", p1.ConsecFail, p2.Successes)
+}
+
+// 端到端：完全无数据的快速关闭 → 立即拉黑，下一个连接直接跳过。
+func TestNoDataMarkedDead(t *testing.T) {
+	port := freePort(t)
+
+	// up1: accept 后立刻关闭（TCP 连通但零数据）
+	ln1 := listenOn(t, "127.0.0.1", port)
+	defer ln1.Close()
+	go func() {
+		for {
+			c, err := ln1.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) { c.Close() }(c)
+		}
+	}()
+	up2 := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
+	defer up2.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "127.0.0.1", Latency: 10, Speed: 50}, // 更高分
+		{IP: "127.0.0.2", Latency: 500, Speed: 5},
+	})
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	// 第一个连接撞 up1：无数据 → 失败 + 拉黑
+	c1, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1.Write([]byte("ping"))
+	c1.SetReadDeadline(time.Now().Add(time.Second))
+	io.Copy(io.Discard, c1)
+	c1.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	p1, _ := poolTop(pool, "127.0.0.1")
+	if p1 == nil || p1.CumFail == 0 || !p1.DeadUntil.After(time.Now()) {
+		t.Fatalf("up1 should be failed and dead-flagged: %+v", p1)
+	}
+
+	// 第二个连接：必须跳过 up1 落到 up2
+	c2, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(c2)
+	if !echoRound(t, br, c2, "hello") {
+		t.Fatal("second connection should reach up2")
+	}
+	c2.Close()
+	up2.closeConns() // end the up2 segment so its verdict is reported
+	time.Sleep(200 * time.Millisecond)
+	if p1.Attempts != 1 {
+		t.Fatalf("up1 must not be dialed again while dead: attempts=%d", p1.Attempts)
+	}
+	p2, _ := poolTop(pool, "127.0.0.2")
+	if p2 == nil || p2.Successes == 0 {
+		t.Fatalf("up2 should have served: %+v", p2)
+	}
+	t.Logf("no-data → dead-skip OK: up1 attempts=%d cum_fail=%d | up2 successes=%d",
+		p1.Attempts, p1.CumFail, p2.Successes)
+}
+
+// 客户端自己断开不算 IP 的过错（中性）。
+func TestClientRSTNeutral(t *testing.T) {
+	port := freePort(t)
+	up := newFakeUpstream(t, listenOn(t, "127.0.0.1", port))
+	defer up.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, 1)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := c.(*net.TCPConn)
+	tc.SetLinger(0) // RST：客户端过错
+	c.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	e, _ := poolTop(pool, "127.0.0.1")
+	if e == nil || e.CumFail != 0 || e.Successes != 0 {
+		t.Fatalf("client RST must be neutral: %+v", e)
+	}
+}
+
+var errTest = errors.New("test error")

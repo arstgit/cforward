@@ -48,12 +48,15 @@ type Config struct {
 	DialTimeout    Duration `json:"dial_timeout"`
 	NoDataTimeout  Duration `json:"no_data_timeout"`
 	CfstURL        string   `json:"cfst_url"`
-	CfstThreads    int      `json:"cfst_threads"`  // cfst -n
-	CfstTests      int      `json:"cfst_tests"`    // cfst -t
-	CfstDLCount    int      `json:"cfst_dl_count"` // cfst -dn
-	CfstDLTime     int      `json:"cfst_dl_time"`  // cfst -dt
-	CfstTop        int      `json:"cfst_top"`      // cfst -p: results added to pool
-	CfstDD         bool     `json:"cfst_dd"`       // cfst -dd: skip the download speed test
+	CfstThreads    int      `json:"cfst_threads"`     // cfst -n
+	CfstTests      int      `json:"cfst_tests"`       // cfst -t
+	CfstDLCount    int      `json:"cfst_dl_count"`    // cfst -dn
+	CfstDLTime     int      `json:"cfst_dl_time"`     // cfst -dt
+	CfstTop        int      `json:"cfst_top"`         // cfst -p: results added to pool
+	CfstDD         bool     `json:"cfst_dd"`          // cfst -dd: skip the download speed test
+	MinActiveBytes int64    `json:"min_active_bytes"` // a segment must move this much to count as success
+	MinActiveSpan  Duration `json:"min_active_span"`  // ...or keep flowing for at least this long
+	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with recent failures for this long
 	StatusInterval Duration `json:"status_interval"`
 	Debug          bool     `json:"debug"`
 }
@@ -77,6 +80,9 @@ func defaultConfig() Config {
 		CfstDLTime:     10,
 		CfstTop:        20,
 		CfstDD:         true, // latency-only by default (saves traffic); opt in to download tests
+		MinActiveBytes: 64 * 1024,
+		MinActiveSpan:  Duration(2 * time.Second),
+		DeadSkip:       Duration(60 * time.Second),
 		StatusInterval: Duration(60 * time.Second),
 	}
 }
@@ -168,6 +174,9 @@ func main() {
 	fs.IntVar(&cfg.CfstDLTime, "cfst-dl-time", cfg.CfstDLTime, "cfst per-IP download test time limit in seconds (-dt)")
 	fs.IntVar(&cfg.CfstTop, "cfst-top", cfg.CfstTop, "cfst results added to the pool (-p)")
 	fs.BoolVar(&cfg.CfstDD, "cfst-dd", cfg.CfstDD, "skip the cfst download speed test (default on; set -cfst-dd=false to enable download tests)")
+	fs.Int64Var(&cfg.MinActiveBytes, "min-active-bytes", cfg.MinActiveBytes, "a segment must move this many bytes to count as success")
+	fs.DurationVar((*time.Duration)(&cfg.MinActiveSpan), "min-active-span", cfg.MinActiveSpan.Std(), "or data must keep flowing for at least this long (changing traffic)")
+	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with recent no-data/error failures for this long")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -208,7 +217,8 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
-	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std())
+	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
+		cfg.DeadSkip.Std(), cfg.MinActiveSpan.Std(), cfg.MinActiveBytes)
 	go fw.Serve(ctx, ln)
 
 	// Periodic status block.

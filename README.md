@@ -91,6 +91,9 @@ fall back to defaults.
 | `-cfst-dl-time` | `10` | cfst per-IP download test time limit in seconds (`-dt`) |
 | `-cfst-top` | `20` | cfst results added to the pool (`-p`) |
 | `-cfst-dd` | `true` | skip the cfst download speed test (default); set `-cfst-dd=false` to enable download tests |
+| `-min-active-bytes` | `65536` | a segment must move this many bytes to count as success |
+| `-min-active-span` | `2s` | or data must keep flowing for at least this long (changing traffic) |
+| `-dead-skip` | `60s` | skip IPs with recent no-data/error failures for this long |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
 | `-debug` | `false` | enable debug logging |
@@ -116,12 +119,20 @@ Score = `0.4 × latency + 0.3 × speed + 0.2 × success + 0.1 × retry`, each no
 
 - latency score = `100 × (1 − latency_ms/1000)`, latency = dial duration
 - speed score = `100 × (1 − e^(−speed_MBps/20))`
-- success rate = dials that succeeded and whose transport did not fail ÷ total dials
+- success rate = segments with ACTIVE traffic ÷ total dial attempts
 - retry rate = attributed retries ÷ (retries + successful connections)
 
+**Only active traffic is the gold standard.** A segment counts as a success only when the
+upstream sent data back with a real time span (`-min-active-span`, changing/ongoing flow)
+or in real volume (`-min-active-bytes`). TCP connectivity alone, a lone small response
+("just a 200"), a silent close, or a rejected connection never counts — such segments are
+failures, and the clearest dead signals (no data at all, quick close) additionally mark
+the IP dead for `-dead-skip`, so the next connection immediately moves on. Client-side
+faults and benign idle closes are neutral. Failures drive ConsecFail (score ×0.1 after 3)
+and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged IPs.
+
 Initial scores come from cfst's latency/download speed (U and R start at 1.0); live stats
-update via EMA (α=0.3) and fully take over after 5 samples. 3 consecutive failures crush
-the score ×0.1; `-fail-evict` cumulative failures evict the IP.
+update via EMA (α=0.3, fed only by active segments) and fully take over after 5 samples.
 
 ### Traffic: latency-only by default
 

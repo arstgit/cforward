@@ -24,18 +24,24 @@ var activeConns atomic.Int64
 // When the upstream path breaks, the client connection is kept and forwarding
 // resumes through the next-best IP immediately.
 type Forwarder struct {
-	pool          *Pool
-	targetPort    int
-	dialTimeout   time.Duration
-	noDataTimeout time.Duration
+	pool           *Pool
+	targetPort     int
+	dialTimeout    time.Duration
+	noDataTimeout  time.Duration
+	deadSkip       time.Duration // IPs with no-data/error failures are skipped for this long
+	minActiveBytes int64         // a segment must carry this much traffic to count as success
+	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout time.Duration) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip, minActiveSpan time.Duration, minActiveBytes int64) *Forwarder {
 	return &Forwarder{
-		pool:          pool,
-		targetPort:    targetPort,
-		dialTimeout:   dialTimeout,
-		noDataTimeout: noDataTimeout,
+		pool:           pool,
+		targetPort:     targetPort,
+		dialTimeout:    dialTimeout,
+		noDataTimeout:  noDataTimeout,
+		deadSkip:       deadSkip,
+		minActiveSpan:  minActiveSpan,
+		minActiveBytes: minActiveBytes,
 	}
 }
 
@@ -99,6 +105,10 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		if skip[cand.IP] {
 			continue
 		}
+		if time.Now().Before(cand.DeadUntil) {
+			// Temporarily dead (recent no-data/error failure): skip without counting a retry.
+			continue
+		}
 		ip := cand.IP
 		start := time.Now()
 		conn, err := net.DialTimeout("tcp",
@@ -130,6 +140,26 @@ type segInfo struct {
 	start      time.Time
 	c2u        atomic.Int64 // client→upstream bytes
 	u2c        atomic.Int64 // upstream→client bytes
+	firstFlow  atomic.Int64 // UnixNano of the first data byte in either direction
+	lastFlow   atomic.Int64 // UnixNano of the last data byte
+}
+
+// flowSpan returns how long data kept flowing during this segment.
+// A lone burst (e.g. a single response) has a near-zero span; ongoing traffic
+// (“changing flow”) spans seconds. 0 when no data moved.
+func (s *segInfo) flowSpan() time.Duration {
+	first := s.firstFlow.Load()
+	last := s.lastFlow.Load()
+	if first == 0 || last <= first {
+		return 0
+	}
+	return time.Duration(last - first)
+}
+
+func (s *segInfo) touch() {
+	now := time.Now().UnixNano()
+	s.firstFlow.CompareAndSwap(0, now)
+	s.lastFlow.Store(now)
 }
 
 // activeSegs holds all live relay segments, keyed by the client connection.
@@ -176,18 +206,39 @@ func (f *Forwarder) handle(client net.Conn) {
 		seg.done()
 
 		c2u, u2c := seg.c2u.Load(), seg.u2c.Load()
-		// ok = no upstream-side error (client-side disconnects do not count against the IP)
-		ok := res.upErr == nil
+		total := c2u + u2c
+		verdict, ok, markDead := f.classify(res, c2u, u2c, seg.flowSpan())
 		speed := 0.0
 		if res.dur > 0 {
-			speed = float64(c2u+u2c) / res.dur.Seconds() / 1e6 // MB/s
+			speed = float64(total) / res.dur.Seconds() / 1e6 // MB/s, both directions
 		}
-		f.pool.ReportConn(used.IP, ok, c2u, res.dur, retries)
 		slog.Info("forward end",
-			"client", clientAddr, "ip", used.IP, "ok", ok,
+			"client", clientAddr, "ip", used.IP, "ok", ok, "verdict", verdict,
 			"lat_ms", seg.dialLatMS, "dur", res.dur.Round(time.Millisecond),
-			"up_bytes", c2u, "down_bytes", u2c,
+			"up_bytes", c2u, "down_bytes", u2c, "flow_span", seg.flowSpan().Round(time.Millisecond),
 			"speed_mbps", round2(speed), "switches", switchCount, "retries", retries)
+
+		switch verdict {
+		case "active":
+			// Gold standard: ongoing changing traffic (upstream sent data across time
+			// or in volume). Only this feeds Successes and the speed EMA.
+			f.pool.ReportConn(used.IP, true, total, res.dur, retries)
+		case "client_err", "idle":
+			// Neutral: the client broke the connection, or it closed after idle time.
+			// Neither rewards nor penalizes the IP.
+		default:
+			// Fail: up_err, no_data, no_response or tiny ("a lone 200"). Drives
+			// ConsecFail/CumFail; the clear dead signals additionally mark the IP dead
+			// so the next connection skips it immediately.
+			f.pool.ReportConn(used.IP, false, total, res.dur, retries)
+			if markDead {
+				f.pool.MarkDead(used.IP, f.deadSkip)
+				slog.Warn("upstream not serving traffic, marking dead",
+					"ip", used.IP, "client", clientAddr, "verdict", verdict,
+					"up_bytes", c2u, "down_bytes", u2c,
+					"dur", res.dur.Round(time.Millisecond))
+			}
+		}
 
 		// Upstream ended normally (EOF) or the client is gone → connection over.
 		if res.upErr == nil || res.clientErr != nil || res.upEOF {
@@ -197,6 +248,7 @@ func (f *Forwarder) handle(client net.Conn) {
 		// Upstream broke: switch to the next-best IP and keep relaying.
 		skip[used.IP] = true
 		switchCount++
+		f.pool.MarkDead(used.IP, f.deadSkip)
 		slog.Info("upstream broken, switching", "from", used.IP,
 			"client", clientAddr, "err", res.upErr, "switch_count", switchCount)
 
@@ -210,6 +262,39 @@ func (f *Forwarder) handle(client net.Conn) {
 		seg = newSeg(client, clientAddr, used.IP, lat)
 		slog.Info("forward start", "client", clientAddr, "ip", used.IP,
 			"lat_ms", seg.dialLatMS, "switch_count", switchCount)
+	}
+}
+
+// classify judges a finished segment. Only ACTIVE traffic is the gold standard:
+// the upstream sent data back with a real time span (ongoing, changing flow) or in
+// real volume. TCP connectivity alone, a lone small response (“just a 200”), a
+// silent close, or a rejected connection never counts as success.
+//
+// Verdicts:
+//   - active:      real traffic flowed (u2c>0 and flowSpan/volume thresholds met) → success
+//   - up_err:      upstream-side transport error → failure + dead-skip + in-loop switch
+//   - no_data:     accepted TCP but nothing came back, ended quickly → failure + dead-skip
+//   - no_response: one-way only for a long time → failure (no dead-skip)
+//   - tiny:        only a small exchange (a lone 200) → failure (no dead-skip)
+//   - client_err:  client broke the connection → neutral
+//   - idle:        closed after idle time with no data → neutral
+func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok, markDead bool) {
+	total := c2u + u2c
+	switch {
+	case res.upErr != nil:
+		return "up_err", false, true
+	case u2c > 0 && (flowSpan >= f.minActiveSpan || total >= f.minActiveBytes):
+		return "active", true, false
+	case res.clientErr != nil:
+		return "client_err", false, false
+	case total == 0 && res.dur >= 2*time.Second:
+		return "idle", false, false
+	case u2c == 0 && res.dur < 10*time.Second:
+		return "no_data", false, true
+	case u2c == 0:
+		return "no_response", false, false
+	default:
+		return "tiny", false, false
 	}
 }
 
@@ -274,6 +359,7 @@ func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 				} else {
 					seg.u2c.Add(int64(nr))
 				}
+				seg.touch()
 			}
 			if rerr != nil {
 				if rerr == io.EOF {
