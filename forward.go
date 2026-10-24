@@ -152,7 +152,9 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		return provenList[i].Score() > provenList[j].Score()
 	})
 	for _, cand := range provenList {
-		if f.overLimit(cand.IP, provenList) {
+		if f.atLimit(cand.IP) {
+			// Overloaded: let the unproven pool take over instead of piling every
+			// connection onto one proven IP (single point of failure).
 			continue
 		}
 		if conn, lat, ok := tryDial(cand); ok {
@@ -179,12 +181,23 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		}
 		return rest[i].Score() > rest[j].Score()
 	})
+	var leastLoaded *IPEntry
 	for _, cand := range rest {
-		if f.overLimit(cand.IP, rest) {
+		if f.atLimit(cand.IP) {
+			if leastLoaded == nil {
+				leastLoaded = cand // rest is sorted by load: first over-limit one is least loaded
+			}
 			continue
 		}
 		if conn, lat, ok := tryDial(cand); ok {
 			return conn, cand, retries, lat
+		}
+	}
+	if leastLoaded != nil {
+		// Every candidate is over the soft cap: still serve the least-loaded one
+		// rather than rejecting the connection.
+		if conn, lat, ok := tryDial(leastLoaded); ok {
+			return conn, leastLoaded, retries, lat
 		}
 	}
 	return nil, nil, retries, 0
@@ -202,28 +215,10 @@ func (f *Forwarder) activeCount(ip string) int {
 	return n
 }
 
-// overLimit reports whether the IP already carries the max allowed concurrent
-// segments. Soft cap: when every candidate is over the limit, the least-loaded
-// one is allowed through rather than rejecting the connection.
-func (f *Forwarder) overLimit(ip string, list []*IPEntry) bool {
-	if f.maxPerIP <= 0 {
-		return false
-	}
-	busy := 0
-	minBusy := int(^uint(0) >> 1)
-	for _, c := range list {
-		n := f.activeCount(c.IP)
-		if n < minBusy {
-			minBusy = n
-		}
-		if n >= f.maxPerIP {
-			busy++
-		}
-	}
-	if busy == len(list) {
-		return f.activeCount(ip) > minBusy // all full: allow the least-loaded one
-	}
-	return f.activeCount(ip) >= f.maxPerIP
+// atLimit reports whether the IP already carries the max allowed concurrent
+// segments (soft cap; 0 = unlimited).
+func (f *Forwarder) atLimit(ip string) bool {
+	return f.maxPerIP > 0 && f.activeCount(ip) >= f.maxPerIP
 }
 
 // segInfo tracks one live relay segment (for per-segment logs and the status block).

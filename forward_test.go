@@ -899,12 +899,18 @@ func TestProvenLoadBalance(t *testing.T) {
 	pool.entries["127.0.0.4"].LastActive = time.Now()
 	pool.mu.Unlock()
 
-	// A 已有 5 个活跃段（伪造），maxPerIP=4 → A 超限，新连接应选 B
-	fakeConn := &net.TCPConn{}
+	// A 已有 5 个活跃段（伪造，不同 key），maxPerIP=4 → A 超限，新连接应选 B
+	var fakeConns []*net.TCPConn
 	for i := 0; i < 5; i++ {
-		activeSegs.Store(fakeConn, &segInfo{client: fakeConn, ip: "127.0.0.3"})
+		fc := &net.TCPConn{}
+		fakeConns = append(fakeConns, fc)
+		activeSegs.Store(fc, &segInfo{client: fc, ip: "127.0.0.3"})
 	}
-	defer activeSegs.Delete(fakeConn)
+	defer func() {
+		for _, fc := range fakeConns {
+			activeSegs.Delete(fc)
+		}
+	}()
 
 	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 4)
 	ln := listenOn(t, "127.0.0.1", 0)
@@ -934,4 +940,73 @@ func TestProvenLoadBalance(t *testing.T) {
 		t.Fatalf("least-loaded proven IP should get the connection: %+v", pB)
 	}
 	t.Logf("load-balance OK: A(5 active, cap 4) attempts=%d | B attempts=%d", pA.Attempts, pB.Attempts)
+}
+
+// 单 proven IP 超限时让位给 unproven 池，避免单点压垮。
+func TestProvenOverloadFallsBack(t *testing.T) {
+	port := freePort(t)
+	// A: proven 但已有 maxPerIP 个活跃段；B: unproven（正常回显）
+	lnA := listenOn(t, "127.0.0.5", port)
+	defer lnA.Close()
+	go func() {
+		for {
+			c, err := lnA.Accept()
+			if err != nil {
+				return
+			}
+			go io.Copy(c, c)
+		}
+	}()
+	upB := newFakeUpstream(t, listenOn(t, "127.0.0.6", port))
+	defer upB.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "127.0.0.5", Latency: 10, Speed: 50},
+		{IP: "127.0.0.6", Latency: 500, Speed: 5},
+	})
+	pool.mu.Lock()
+	pool.entries["127.0.0.5"].LastActive = time.Now() // A proven
+	pool.mu.Unlock()
+
+	var fakeConns []*net.TCPConn
+	for i := 0; i < 3; i++ { // maxPerIP=2 → A 超限
+		fc := &net.TCPConn{}
+		fakeConns = append(fakeConns, fc)
+		activeSegs.Store(fc, &segInfo{client: fc, ip: "127.0.0.5"})
+	}
+	defer func() {
+		for _, fc := range fakeConns {
+			activeSegs.Delete(fc)
+		}
+	}()
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 2)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	br := bufio.NewReader(c)
+	if !echoRound(t, br, c, "hello") {
+		t.Fatal("no echo; fallback to unproven pool failed")
+	}
+	upB.closeConns()
+	time.Sleep(150 * time.Millisecond)
+
+	pA, _ := poolTop(pool, "127.0.0.5")
+	pB, _ := poolTop(pool, "127.0.0.6")
+	if pA == nil || pA.Attempts != 0 {
+		t.Fatalf("overloaded proven IP must not be dialed: %+v", pA)
+	}
+	if pB == nil || pB.Attempts != 1 {
+		t.Fatalf("unproven pool should take over: %+v", pB)
+	}
+	t.Logf("fallback OK: A(proven, at cap) attempts=%d | B(unproven) attempts=%d", pA.Attempts, pB.Attempts)
 }

@@ -491,12 +491,17 @@ func (p *Pool) DeadSkippedCount() int {
 // handshake with no app data). It counts as a sample so live stats take over, but
 // does not touch Successes, TransFail, ConsecFail or CumFail — the IP is neither
 // rewarded nor burned by client behavior.
+//
+// For a tiny exchange the LastActive stamp is refreshed: a completed TCP+TLS
+// exchange proves the path is usable, so under a connection storm the pool keeps
+// a healthy set of proven IPs to load-balance across instead of starving to one.
 func (p *Pool) ReportNeutral(ip string, retries int) {
 	p.mu.Lock()
 	e := p.entries[ip]
 	if e != nil {
 		e.Samples++
 		e.Retries += retries
+		e.LastActive = time.Now()
 		e.UpdatedAt = time.Now()
 	}
 	p.mu.Unlock()
