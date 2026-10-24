@@ -149,3 +149,14 @@ cfst 参数：`-n 100 -t 2 -dn 10 -dt 10 -p 20 -tlr 0 -o ""`（前 20 名入池�
   1    172.64.229.241       69.7     72ms    1.8MB/s
   2    104.18.32.170        69.3     80ms    1.7MB/s
 ```
+
+## 致谢
+
+- [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) —— 本项目的
+  优选 IP 扫描工具。cforward 运行它来发现最优 Cloudflare IP；安卓 app 直接打包其
+  官方发行版（二进制 + `ip.txt`），开箱即用。该项目以 MIT 协议开源，
+  感谢 XIU2 及所有贡献者。
+
+## License
+
+[MIT](LICENSE)
