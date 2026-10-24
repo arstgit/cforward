@@ -21,6 +21,7 @@
   "dead_skip": "60s",
   "dead_after": 2,
   "proven_window": "30m",
+  "max_per_ip": 12,
   "status_interval": "60s",
   "admin_addr": "127.0.0.1:18080",
   "debug": false

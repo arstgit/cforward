@@ -60,6 +60,7 @@ type Config struct {
 	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with repeated failures for this long
 	DeadAfter      int      `json:"dead_after"`       // consecutive failures before dead-skip (stability-first)
 	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
+	MaxPerIP       int      `json:"max_per_ip"`       // soft cap on concurrent segments per IP (0 = unlimited)
 	StatusInterval Duration `json:"status_interval"`
 	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
 	Debug          bool     `json:"debug"`
@@ -89,6 +90,7 @@ func defaultConfig() Config {
 		DeadSkip:       Duration(60 * time.Second),
 		DeadAfter:      2,
 		ProvenWindow:   Duration(30 * time.Minute),
+		MaxPerIP:       12,
 		StatusInterval: Duration(60 * time.Second),
 		AdminAddr:      "127.0.0.1:18080",
 	}
@@ -186,6 +188,7 @@ func main() {
 	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with repeated failures for this long")
 	fs.IntVar(&cfg.DeadAfter, "dead-after", cfg.DeadAfter, "consecutive failures before an IP is dead-skipped")
 	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
+	fs.IntVar(&cfg.MaxPerIP, "max-per-ip", cfg.MaxPerIP, "soft cap on concurrent segments per IP (0 = unlimited)")
 	fs.StringVar(&cfg.AdminAddr, "admin-addr", cfg.AdminAddr, "HTTP admin endpoint (JSON status); empty disables")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
@@ -229,7 +232,8 @@ func main() {
 	}
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
-		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(), cfg.MinActiveBytes)
+		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(),
+		cfg.MinActiveBytes, cfg.MaxPerIP)
 	go fw.Serve(ctx, ln)
 
 	// Periodic status block.

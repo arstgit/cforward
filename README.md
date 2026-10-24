@@ -96,6 +96,7 @@ fall back to defaults.
 | `-dead-skip` | `60s` | skip IPs with repeated failures for this long |
 | `-dead-after` | `2` | consecutive failures before an IP is dead-skipped (stability-first) |
 | `-proven-window` | `30m` | IPs with ACTIVE traffic within this window are dialed first |
+| `-max-per-ip` | `12` | soft cap on concurrent segments per IP (load-balances storms across proven IPs; 0 = unlimited) |
 | `-admin-addr` | `127.0.0.1:18080` | HTTP admin endpoint (JSON status); empty disables |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
@@ -135,6 +136,10 @@ pile onto a dead IP. Only client-side faults are neutral. Failures drive ConsecF
 ×0.1 after 3) and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged
 IPs. Dials prefer IPs **proven by recent active traffic** (`-proven-window`): a
 mid-session switch lands on a known-good path instead of an untested high-score one.
+Proven candidates are **load-balanced** — the ones with the fewest live segments go
+first, and `-max-per-ip` caps how many concurrent segments a single IP carries, so a
+client's connection storm spreads across several known-good IPs instead of piling
+onto one (no single point of failure).
 A client that connects but never sends a byte (`idle`) is neutral — switching cannot
 help a silent client. Stability-first: an IP is only dead-skipped after
 `-dead-after` consecutive failed segments, so a single transient stall on a flaky

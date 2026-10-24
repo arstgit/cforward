@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -31,11 +32,12 @@ type Forwarder struct {
 	deadSkip       time.Duration // IPs with repeated failures are skipped for this long
 	deadAfter      int           // consecutive failures before an IP is dead-skipped
 	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
+	maxPerIP       int           // soft cap on concurrent segments per IP (0 = unlimited)
 	minActiveBytes int64         // a segment must carry this much traffic to count as success
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP int) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
@@ -46,6 +48,7 @@ func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSk
 		provenWindow:   provenWindow,
 		minActiveSpan:  minActiveSpan,
 		minActiveBytes: minActiveBytes,
+		maxPerIP:       maxPerIP,
 	}
 }
 
@@ -130,23 +133,54 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 	proven := func(cand *IPEntry) bool {
 		return !cand.LastActive.IsZero() && time.Since(cand.LastActive) <= f.provenWindow
 	}
-	// Pass 1: proven-good IPs (recent active traffic). They serve real data, so a
-	// mid-session switch lands on a known-good path instead of an untested one.
+	// Pass 1: proven-good IPs (recent active traffic). Load-balanced: among proven
+	// candidates, those with the fewest live segments go first (ties broken by
+	// score), so a client's connection storm spreads across several known-good
+	// IPs instead of piling onto a single one (single point of failure).
+	var provenList []*IPEntry
 	for _, cand := range candidates {
 		if skip[cand.IP] || !proven(cand) {
+			continue
+		}
+		provenList = append(provenList, cand)
+	}
+	sort.Slice(provenList, func(i, j int) bool {
+		ci, cj := f.activeCount(provenList[i].IP), f.activeCount(provenList[j].IP)
+		if ci != cj {
+			return ci < cj
+		}
+		return provenList[i].Score() > provenList[j].Score()
+	})
+	for _, cand := range provenList {
+		if f.overLimit(cand.IP, provenList) {
 			continue
 		}
 		if conn, lat, ok := tryDial(cand); ok {
 			return conn, cand, retries, lat
 		}
 	}
-	// Pass 2: everything else (unproven fallbacks and cold-start).
+	// Pass 2: everything else (unproven fallbacks and cold-start), load-balanced the
+	// same way.
+	var rest []*IPEntry
 	for _, cand := range candidates {
 		if skip[cand.IP] {
 			continue
 		}
 		if time.Now().Before(cand.DeadUntil) {
-			// Temporarily dead (recent no-data/error failure): skip without counting a retry.
+			// Temporarily dead (recent failures): skip without counting a retry.
+			continue
+		}
+		rest = append(rest, cand)
+	}
+	sort.Slice(rest, func(i, j int) bool {
+		ci, cj := f.activeCount(rest[i].IP), f.activeCount(rest[j].IP)
+		if ci != cj {
+			return ci < cj
+		}
+		return rest[i].Score() > rest[j].Score()
+	})
+	for _, cand := range rest {
+		if f.overLimit(cand.IP, rest) {
 			continue
 		}
 		if conn, lat, ok := tryDial(cand); ok {
@@ -154,6 +188,42 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		}
 	}
 	return nil, nil, retries, 0
+}
+
+// activeCount returns how many live relay segments currently use this IP.
+func (f *Forwarder) activeCount(ip string) int {
+	n := 0
+	activeSegs.Range(func(_, v any) bool {
+		if v.(*segInfo).ip == ip {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// overLimit reports whether the IP already carries the max allowed concurrent
+// segments. Soft cap: when every candidate is over the limit, the least-loaded
+// one is allowed through rather than rejecting the connection.
+func (f *Forwarder) overLimit(ip string, list []*IPEntry) bool {
+	if f.maxPerIP <= 0 {
+		return false
+	}
+	busy := 0
+	minBusy := int(^uint(0) >> 1)
+	for _, c := range list {
+		n := f.activeCount(c.IP)
+		if n < minBusy {
+			minBusy = n
+		}
+		if n >= f.maxPerIP {
+			busy++
+		}
+	}
+	if busy == len(list) {
+		return f.activeCount(ip) > minBusy // all full: allow the least-loaded one
+	}
+	return f.activeCount(ip) >= f.maxPerIP
 }
 
 // segInfo tracks one live relay segment (for per-segment logs and the status block).
