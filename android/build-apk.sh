@@ -30,10 +30,10 @@ mkdir -p "$ROOT/android/app/src/main/assets/bin" "$ROOT/android/app/src/main/ass
 # 2) fetch cfst + ip.txt from the upstream release when missing
 if [ ! -f app/src/main/assets/cfst/cfst ] || [ ! -f app/src/main/assets/cfst/ip.txt ]; then
     echo "== fetching cfst_linux_arm64 from GitHub releases"
-    cd /tmp
-    curl -sL -o cfst_arm64.tar.gz \
+    [ -f /tmp/cfst_arm64.tar.gz ] || curl -sL -o /tmp/cfst_arm64.tar.gz \
         https://github.com/XIU2/CloudflareSpeedTest/releases/download/v2.3.5/cfst_linux_arm64.tar.gz
-    tar xzf cfst_arm64.tar.gz -C /tmp
+    rm -rf /tmp/cfst_linux_arm64
+    tar xzf /tmp/cfst_arm64.tar.gz -C /tmp
     cp /tmp/cfst_linux_arm64/cfst "$ROOT/android/app/src/main/assets/cfst/"
     cp /tmp/cfst_linux_arm64/ip.txt "$ROOT/android/app/src/main/assets/cfst/"
     # GPL-3.0 license text for the bundled third-party binary (kept in git)
