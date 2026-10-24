@@ -338,6 +338,20 @@ func writeStatusJSON(w http.ResponseWriter, cfg *Config, pool *Pool, sched *Sche
 	running, lastRun, lastDur, lastErr := sched.Status()
 
 	top := pool.Top(20)
+	topList := make([]map[string]any, 0, len(top))
+	for _, e := range top {
+		topList = append(topList, map[string]any{
+			"ip":          e.IP,
+			"score":       round2(e.Score()),
+			"lat":         round2(e.latency()),
+			"speed":       round2(e.speed()),
+			"samples":     e.Samples,
+			"attempts":    e.Attempts,
+			"successes":   e.Successes,
+			"dead_until":  e.DeadUntil.Format(time.RFC3339),
+			"last_active": e.LastActive.Format(time.RFC3339),
+		})
+	}
 	active := []map[string]any{}
 	activeSegs.Range(func(_, v any) bool {
 		s := v.(*segInfo)
@@ -384,7 +398,7 @@ func writeStatusJSON(w http.ResponseWriter, cfg *Config, pool *Pool, sched *Sche
 			"best_score":   round2(pool.BestScore()),
 			"proven":       pool.ProvenCount(cfg.ProvenWindow.Std()),
 			"dead_skipped": pool.DeadSkippedCount(),
-			"top":          top,
+			"top":          topList,
 		},
 		"active_conns":    activeConns.Load(),
 		"active_segments": active,
