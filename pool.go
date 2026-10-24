@@ -486,6 +486,24 @@ func (p *Pool) DeadSkippedCount() int {
 	return n
 }
 
+// ReportNeutral records a segment that is neither a success nor a failure
+// (client-side fault, silent client, or a complete-but-idle exchange like a TLS
+// handshake with no app data). It counts as a sample so live stats take over, but
+// does not touch Successes, TransFail, ConsecFail or CumFail — the IP is neither
+// rewarded nor burned by client behavior.
+func (p *Pool) ReportNeutral(ip string, retries int) {
+	p.mu.Lock()
+	e := p.entries[ip]
+	if e != nil {
+		e.Samples++
+		e.Retries += retries
+		e.UpdatedAt = time.Now()
+	}
+	p.mu.Unlock()
+	p.markDirty()
+	p.notify()
+}
+
 // MaybeMarkDead flags an IP as temporarily dead once it has accumulated deadAfter
 // consecutive failures (stability-first: a single bad segment must not burn an IP).
 // Returns true when the IP was newly marked. dialBest skips dead IPs until DeadUntil.

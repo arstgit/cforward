@@ -249,13 +249,21 @@ func (f *Forwarder) handle(client net.Conn) {
 			// Gold standard: ongoing changing traffic (upstream sent data across time
 			// or in volume). Only this feeds Successes and the speed EMA.
 			f.pool.ReportConn(used.IP, true, total, res.dur, retries)
+		case "tiny":
+			// Neutral: a complete exchange happened (e.g. a full TLS handshake) but
+			// no real traffic followed. The TCP+TLS path works — the stall is at the
+			// application layer, not the IP's fault. Counting it as a failure would
+			// let a client's connection storm burn good IPs. It neither rewards nor
+			// penalizes: Successes stays flat, so U drifts down only slowly.
+			f.pool.ReportNeutral(used.IP, retries)
 		case "client_err", "idle":
 			// Neutral: the client broke the connection, or connected but never sent a
 			// byte. Neither rewards nor penalizes the IP.
 		default:
-			// Fail: up_err, no_data, no_response or tiny. Drives ConsecFail/CumFail.
-			// Dead-skip only after -dead-after consecutive failures (stability-first:
-			// one bad segment on a flaky long-distance path must not burn the IP).
+			// Fail: up_err, no_data or no_response — the upstream never served usable
+			// data. Drives ConsecFail/CumFail. Dead-skip only after -dead-after
+			// consecutive failures (stability-first: one bad segment on a flaky
+			// long-distance path must not burn the IP).
 			f.pool.ReportConn(used.IP, false, total, res.dur, retries)
 			if f.pool.MaybeMarkDead(used.IP, f.deadSkip, f.deadAfter) {
 				slog.Warn("upstream failed repeatedly, marking dead",

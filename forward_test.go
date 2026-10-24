@@ -546,11 +546,10 @@ func TestTCPConnectivityNotSuccess(t *testing.T) {
 	}
 }
 
-// 端到端：只回一个小应答的 IP 不算好，连续小应答后分数被打折、切到真能传流量的 IP。
-func TestTinyResponseNotActive(t *testing.T) {
+// 端到端：tiny（完整小交换，如 TLS 握手）是中性——不拉黑、不淘汰，
+// 即使客户端风暴连续打同一个 IP 也不烧池子。
+func TestTinyIsNeutral(t *testing.T) {
 	port := freePort(t)
-
-	// up1: 收到请求只回 100 字节就关闭（"一个 200"）
 	ln1 := listenOn(t, "127.0.0.1", port)
 	defer ln1.Close()
 	go func() {
@@ -568,38 +567,17 @@ func TestTinyResponseNotActive(t *testing.T) {
 		}
 	}()
 
-	// up2: 回 1500 字节（≥1024 阈值 → 活跃）
-	ln2 := listenOn(t, "127.0.0.2", port)
-	defer ln2.Close()
-	go func() {
-		for {
-			c, err := ln2.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				buf := make([]byte, 1024)
-				c.Read(buf)
-				c.Write(make([]byte, 1500))
-				c.Close()
-			}(c)
-		}
-	}()
-
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
-	pool.AddCfstResults([]CfstResult{
-		{IP: "127.0.0.1", Latency: 10, Speed: 50}, // 高分
-		{IP: "127.0.0.2", Latency: 500, Speed: 5},
-	})
+	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1024)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1024)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go fw.Serve(ctx, ln)
 
-	dial := func() (net.Conn, []byte) {
+	dial := func() []byte {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
@@ -609,34 +587,30 @@ func TestTinyResponseNotActive(t *testing.T) {
 		c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, _ := c.Read(buf)
 		c.Close()
-		return c, buf[:n]
+		return buf[:n]
 	}
 
-	// 第一段撞 up1：只回 100B 小应答 → tiny → 失败 + 拉黑
-	if _, n := dial(); len(n) != 100 {
-		t.Fatalf("round 1: want 100B tiny response, got %dB", len(n))
+	// 客户端风暴：同一 IP 上连续多次 tiny 交换
+	for i := 0; i < 5; i++ {
+		if n := dial(); len(n) != 100 {
+			t.Fatalf("round %d: got %dB", i, len(n))
+		}
+		time.Sleep(120 * time.Millisecond)
 	}
-	time.Sleep(150 * time.Millisecond) // let the segment report land
 	p1, _ := poolTop(pool, "127.0.0.1")
-	if p1 == nil || p1.CumFail == 0 || !p1.DeadUntil.After(time.Now()) {
-		t.Fatalf("up1 should be failed and dead-flagged after one tiny segment: %+v", p1)
+	if p1 == nil {
+		t.Fatal("entry missing")
 	}
-
-	// 第二段：up1 已被拉黑 → 直接落到 up2，拿到足量数据（活跃）
-	if _, n := dial(); len(n) != 1500 {
-		t.Fatalf("round 2: want 1500B from up2, got %dB", len(n))
+	if p1.DeadUntil.After(time.Now()) {
+		t.Fatalf("tiny must not dead-skip: %+v", p1)
 	}
-	time.Sleep(150 * time.Millisecond) // let the segment report land
-	if p1.Attempts != 1 {
-		t.Fatalf("up1 must not be dialed again while dead: attempts=%d", p1.Attempts)
+	if p1.CumFail != 0 || p1.ConsecFail != 0 || p1.Successes != 0 {
+		t.Fatalf("tiny must be neutral (no failures, no successes): %+v", p1)
 	}
-	p2, _ := poolTop(pool, "127.0.0.2")
-	if p2 == nil || p2.Successes == 0 {
-		t.Fatalf("up2 should have an active success: %+v", p2)
+	if p1.Samples != 5 {
+		t.Fatalf("tiny segments should count as samples: %+v", p1)
 	}
-	t.Logf("tiny→dead-skip→switch OK: up1 attempts=%d cum_fail=%d | up2 successes=%d",
-		p1.Attempts, p1.CumFail, p2.Successes)
-	t.Logf("tiny→penalized→switch OK: up1 consec=%d | up2 successes=%d", p1.ConsecFail, p2.Successes)
+	t.Logf("tiny-neutral OK: samples=%d cum_fail=%d successes=%d", p1.Samples, p1.CumFail, p1.Successes)
 }
 
 // 端到端：完全无数据的快速关闭 → 立即拉黑，下一个连接直接跳过。
@@ -830,10 +804,10 @@ func TestZombieCleanup(t *testing.T) {
 	t.Logf("zombie cleanup OK: active_segs=%d samples=%d", segs, e.Samples)
 }
 
-// 稳定性优先：一次失败不拉黑，连续 deadAfter 次才拉黑。
+// 稳定性优先：一次失败不拉黑，连续 deadAfter 次才拉黑（no_data 真死信号）。
 func TestDeadAfterThreshold(t *testing.T) {
 	port := freePort(t)
-	// up1: 只回 100 字节小应答（tiny），分数高；up2: 正常回显
+	// up1: accept 后立刻关闭（no_data）分数高；up2: 正常回显
 	ln1 := listenOn(t, "127.0.0.1", port)
 	defer ln1.Close()
 	go func() {
@@ -842,12 +816,7 @@ func TestDeadAfterThreshold(t *testing.T) {
 			if err != nil {
 				return
 			}
-			go func(c net.Conn) {
-				buf := make([]byte, 1024)
-				c.Read(buf)
-				c.Write(make([]byte, 100))
-				c.Close()
-			}(c)
+			go func(c net.Conn) { c.Close() }(c)
 		}
 	}()
 	up2 := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
@@ -859,40 +828,41 @@ func TestDeadAfterThreshold(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1024)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go fw.Serve(ctx, ln)
 
-	dial := func() []byte {
+	dialClose := func() {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		c.Write([]byte("ping"))
-		buf := make([]byte, 2048)
-		c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, _ := c.Read(buf)
 		c.Close()
-		return buf[:n]
+	}
+	echoRound2 := func() bool {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		br := bufio.NewReader(c)
+		return echoRound(t, br, c, "hello")
 	}
 
-	// 第一次 tiny：记失败，但不拉黑（deadAfter=2）
-	if n := dial(); len(n) != 100 {
-		t.Fatalf("conn1: got %dB", len(n))
-	}
+	// 第一次 no_data：记失败，但不拉黑（deadAfter=2）
+	dialClose()
 	time.Sleep(150 * time.Millisecond)
 	p1, _ := poolTop(pool, "127.0.0.1")
 	if p1 == nil || p1.ConsecFail != 1 || p1.DeadUntil.After(time.Now()) {
 		t.Fatalf("one failure must NOT dead-skip: %+v", p1)
 	}
 
-	// 第二次 tiny：拉黑
-	if n := dial(); len(n) != 100 {
-		t.Fatalf("conn2: got %dB", len(n))
-	}
+	// 第二次 no_data：拉黑
+	dialClose()
 	time.Sleep(150 * time.Millisecond)
 	p1, _ = poolTop(pool, "127.0.0.1")
 	if p1 == nil || !p1.DeadUntil.After(time.Now()) {
@@ -900,8 +870,8 @@ func TestDeadAfterThreshold(t *testing.T) {
 	}
 
 	// 第三次：跳过 up1 落到 up2
-	if n := dial(); len(n) != 4 {
-		t.Fatalf("conn3: want echo from up2, got %dB", len(n))
+	if !echoRound2() {
+		t.Fatal("third connection should reach up2")
 	}
 	p1, _ = poolTop(pool, "127.0.0.1")
 	if p1.Attempts != 2 {
