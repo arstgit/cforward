@@ -881,28 +881,28 @@ func TestDeadAfterThreshold(t *testing.T) {
 }
 
 // 负载均衡：proven IP 中并发连接少的优先；超过 maxPerIP 的 IP 不再接收新连接。
+// 使用 127.0.0.3/.4（其他测试不用）避免全局 activeSegs 残留污染计数。
 func TestProvenLoadBalance(t *testing.T) {
 	port := freePort(t)
-	// 两个都能正常回显的 proven 上游
-	upA := newFakeUpstream(t, listenOn(t, "127.0.0.1", port))
+	upA := newFakeUpstream(t, listenOn(t, "127.0.0.3", port))
 	defer upA.ln.Close()
-	upB := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
+	upB := newFakeUpstream(t, listenOn(t, "127.0.0.4", port))
 	defer upB.ln.Close()
 
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{
-		{IP: "127.0.0.1", Latency: 10, Speed: 50}, // A 分数更高
-		{IP: "127.0.0.2", Latency: 500, Speed: 5}, // B 分数低
+		{IP: "127.0.0.3", Latency: 10, Speed: 50}, // A 分数更高
+		{IP: "127.0.0.4", Latency: 500, Speed: 5}, // B 分数低
 	})
 	pool.mu.Lock()
-	pool.entries["127.0.0.1"].LastActive = time.Now()
-	pool.entries["127.0.0.2"].LastActive = time.Now()
+	pool.entries["127.0.0.3"].LastActive = time.Now()
+	pool.entries["127.0.0.4"].LastActive = time.Now()
 	pool.mu.Unlock()
 
 	// A 已有 5 个活跃段（伪造），maxPerIP=4 → A 超限，新连接应选 B
 	fakeConn := &net.TCPConn{}
 	for i := 0; i < 5; i++ {
-		activeSegs.Store(fakeConn, &segInfo{client: fakeConn, ip: "127.0.0.1"})
+		activeSegs.Store(fakeConn, &segInfo{client: fakeConn, ip: "127.0.0.3"})
 	}
 	defer activeSegs.Delete(fakeConn)
 
@@ -925,8 +925,8 @@ func TestProvenLoadBalance(t *testing.T) {
 	upB.closeConns()
 	time.Sleep(150 * time.Millisecond)
 
-	pA, _ := poolTop(pool, "127.0.0.1")
-	pB, _ := poolTop(pool, "127.0.0.2")
+	pA, _ := poolTop(pool, "127.0.0.3")
+	pB, _ := poolTop(pool, "127.0.0.4")
 	if pA == nil || pA.Attempts != 0 {
 		t.Fatalf("overloaded proven IP must not receive new connections: %+v", pA)
 	}
