@@ -35,6 +35,10 @@ if [ ! -f app/src/main/assets/cfst/cfst ] || [ ! -f app/src/main/assets/cfst/ip.
     tar xzf cfst_arm64.tar.gz -C /tmp
     cp /tmp/cfst_linux_arm64/cfst "$ROOT/android/app/src/main/assets/cfst/"
     cp /tmp/cfst_linux_arm64/ip.txt "$ROOT/android/app/src/main/assets/cfst/"
+    # GPL-3.0 license text for the bundled third-party binary (kept in git)
+    [ -f "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" ] || \
+        curl -sL -o "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" \
+        "https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/LICENSE"
 fi
 
 # 3) ensure the Android SDK is installed

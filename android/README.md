@@ -41,7 +41,8 @@ Gradle 构建。需要 JDK 17+、Android SDK（首次自动下载）。
 - cfst 测速在手机本机执行 = 手机当前网络的最优选 IP，比服务器更准
 - 池子/评分持久化在 app 数据目录，重启不丢
 - 打包的 cfst 二进制与 `ip.txt` 来自
-  [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)（MIT 协议），
+  [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)
+  （GNU GPL v3.0，许可文本随包内置于 `assets/cfst/LICENSE.txt`，源码见上游仓库），
   由 `build-apk.sh` 从官方 Release 自动拉取
 
 ## 已知风险

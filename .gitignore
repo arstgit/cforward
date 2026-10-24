@@ -17,3 +17,4 @@
 /android/app/build/
 /android/app/src/main/assets/bin/
 /android/app/src/main/assets/cfst/
+!/android/app/src/main/assets/cfst/LICENSE.txt

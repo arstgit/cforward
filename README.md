@@ -209,9 +209,10 @@ go test -race ./...   # failover, dial fallback, cfst output parsing, scoring, e
 
 - [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) — the
   preferred-IP scanner that powers this project. cforward runs it to discover the best
-  Cloudflare IPs, and the Android app bundles its official releases (binary + `ip.txt`)
-  so no extra setup is needed. The project is MIT licensed; thanks to XIU2 and all
-  contributors.
+  Cloudflare IPs, and the Android app bundles its official releases (binary + `ip.txt`,
+  plus the GPL-3.0 license text) so no extra setup is needed. The project is licensed
+  under the GNU GPL v3.0 (third-party notice: see [NOTICE](NOTICE)); thanks to XIU2
+  and all contributors.
 
 ## License
 

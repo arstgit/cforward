@@ -1,0 +1,14 @@
+cforward
+Copyright (c) 2026 cforward contributors
+Licensed under the MIT License — see LICENSE.
+
+Third-party software included in distributions:
+
+- CloudflareSpeedTest (cfst)
+  https://github.com/XIU2/CloudflareSpeedTest
+  Copyright (c) XIU2 and contributors
+  Licensed under the GNU General Public License v3.0 — the full license text is
+  bundled inside the Android APK (assets/cfst/LICENSE.txt); the source code is
+  available at the repository above.
+  The Android app distributes its official binary and ip.txt; the server build
+  merely executes a user-provided copy as a separate process.
