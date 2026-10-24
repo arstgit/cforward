@@ -93,7 +93,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -177,7 +177,7 @@ func TestDialFallback(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -505,32 +505,31 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 // classify 单元测试：只有"有变化的流量"才算成功。
 func TestClassify(t *testing.T) {
-	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 2*time.Second, time.Hour, 64*1024)
+	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 1, 2*time.Second, time.Hour, 64*1024)
 	cases := []struct {
 		name     string
 		res      relayResult
 		up, down int64
 		span     time.Duration
 		wantOK   bool
-		wantDead bool
 	}{
-		{"sustained flow", relayResult{upEOF: true}, 300, 1200, 3 * time.Second, true, false},
-		{"big volume burst", relayResult{upEOF: true}, 4096, 128 * 1024, 200 * time.Millisecond, true, false},
-		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false, true},
-		{"no data quick close", relayResult{upEOF: true}, 300, 0, 0, false, true},
-		{"rejected before send", relayResult{upEOF: true}, 0, 0, 0, false, true},
-		{"client silent", relayResult{upEOF: true}, 0, 0, 0, false, false},
-		{"transport error", relayResult{upErr: errTest}, 300, 0, 0, false, true},
-		{"client rst", relayResult{clientErr: errTest}, 0, 0, 0, false, false},
-		{"client rst after traffic", relayResult{clientErr: errTest}, 1024, 200 * 1024, 4 * time.Second, true, false},
+		{"sustained flow", relayResult{upEOF: true}, 300, 1200, 3 * time.Second, true},
+		{"big volume burst", relayResult{upEOF: true}, 4096, 128 * 1024, 200 * time.Millisecond, true},
+		{"one 200 only", relayResult{upEOF: true}, 300, 250, 50 * time.Millisecond, false},
+		{"no data quick close", relayResult{upEOF: true}, 300, 0, 0, false},
+		{"rejected before send", relayResult{upEOF: true}, 0, 0, 0, false},
+		{"client silent", relayResult{upEOF: true}, 0, 0, 0, false},
+		{"transport error", relayResult{upErr: errTest}, 300, 0, 0, false},
+		{"client rst", relayResult{clientErr: errTest}, 0, 0, 0, false},
+		{"client rst after traffic", relayResult{clientErr: errTest}, 1024, 200 * 1024, 4 * time.Second, true},
 	}
 	for _, c := range cases {
 		if c.name == "client silent" {
 			c.res.dur = 5 * time.Second
 		}
-		v, ok, dead := f.classify(c.res, c.up, c.down, c.span)
-		if ok != c.wantOK || dead != c.wantDead {
-			t.Errorf("%s: verdict=%s ok=%v dead=%v want ok=%v dead=%v", c.name, v, ok, dead, c.wantOK, c.wantDead)
+		v, ok := f.classify(c.res, c.up, c.down, c.span)
+		if ok != c.wantOK {
+			t.Errorf("%s: verdict=%s ok=%v want ok=%v", c.name, v, ok, c.wantOK)
 		}
 	}
 }
@@ -593,7 +592,7 @@ func TestTinyResponseNotActive(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1024)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1024)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -665,7 +664,7 @@ func TestNoDataMarkedDead(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -720,7 +719,7 @@ func TestClientRSTNeutral(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -761,7 +760,7 @@ func TestPreferProvenIP(t *testing.T) {
 	pool.entries["127.0.0.2"].LastActive = time.Now()
 	pool.mu.Unlock()
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -800,7 +799,7 @@ func TestZombieCleanup(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 1*time.Second, time.Minute, time.Hour, time.Hour, 1)
+	fw := NewForwarder(pool, port, time.Second, 1*time.Second, time.Minute, 1, time.Hour, time.Hour, 1)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -829,4 +828,84 @@ func TestZombieCleanup(t *testing.T) {
 		t.Fatalf("segment should have ended with a report: %+v", e)
 	}
 	t.Logf("zombie cleanup OK: active_segs=%d samples=%d", segs, e.Samples)
+}
+
+// 稳定性优先：一次失败不拉黑，连续 deadAfter 次才拉黑。
+func TestDeadAfterThreshold(t *testing.T) {
+	port := freePort(t)
+	// up1: 只回 100 字节小应答（tiny），分数高；up2: 正常回显
+	ln1 := listenOn(t, "127.0.0.1", port)
+	defer ln1.Close()
+	go func() {
+		for {
+			c, err := ln1.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				c.Read(buf)
+				c.Write(make([]byte, 100))
+				c.Close()
+			}(c)
+		}
+	}()
+	up2 := newFakeUpstream(t, listenOn(t, "127.0.0.2", port))
+	defer up2.ln.Close()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "127.0.0.1", Latency: 10, Speed: 50},
+		{IP: "127.0.0.2", Latency: 500, Speed: 5},
+	})
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1024)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	dial := func() []byte {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte("ping"))
+		buf := make([]byte, 2048)
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := c.Read(buf)
+		c.Close()
+		return buf[:n]
+	}
+
+	// 第一次 tiny：记失败，但不拉黑（deadAfter=2）
+	if n := dial(); len(n) != 100 {
+		t.Fatalf("conn1: got %dB", len(n))
+	}
+	time.Sleep(150 * time.Millisecond)
+	p1, _ := poolTop(pool, "127.0.0.1")
+	if p1 == nil || p1.ConsecFail != 1 || p1.DeadUntil.After(time.Now()) {
+		t.Fatalf("one failure must NOT dead-skip: %+v", p1)
+	}
+
+	// 第二次 tiny：拉黑
+	if n := dial(); len(n) != 100 {
+		t.Fatalf("conn2: got %dB", len(n))
+	}
+	time.Sleep(150 * time.Millisecond)
+	p1, _ = poolTop(pool, "127.0.0.1")
+	if p1 == nil || !p1.DeadUntil.After(time.Now()) {
+		t.Fatalf("two consecutive failures must dead-skip: %+v", p1)
+	}
+
+	// 第三次：跳过 up1 落到 up2
+	if n := dial(); len(n) != 4 {
+		t.Fatalf("conn3: want echo from up2, got %dB", len(n))
+	}
+	p1, _ = poolTop(pool, "127.0.0.1")
+	if p1.Attempts != 2 {
+		t.Fatalf("up1 must not be dialed while dead: attempts=%d", p1.Attempts)
+	}
+	t.Logf("dead-after threshold OK: up1 attempts=%d consec=%d", p1.Attempts, p1.ConsecFail)
 }

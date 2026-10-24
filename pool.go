@@ -486,6 +486,24 @@ func (p *Pool) DeadSkippedCount() int {
 	return n
 }
 
+// MaybeMarkDead flags an IP as temporarily dead once it has accumulated deadAfter
+// consecutive failures (stability-first: a single bad segment must not burn an IP).
+// Returns true when the IP was newly marked. dialBest skips dead IPs until DeadUntil.
+func (p *Pool) MaybeMarkDead(ip string, deadSkip time.Duration, deadAfter int) bool {
+	p.mu.Lock()
+	e := p.entries[ip]
+	if e == nil || e.ConsecFail < deadAfter || !e.DeadUntil.IsZero() {
+		p.mu.Unlock()
+		return false
+	}
+	e.DeadUntil = time.Now().Add(deadSkip)
+	e.UpdatedAt = time.Now()
+	p.mu.Unlock()
+	p.markDirty()
+	p.notify()
+	return true
+}
+
 // MarkDead flags an IP as temporarily dead: dialBest skips it until DeadUntil.
 // Called after any upstream-side failure (transport error or no-data segment) so
 // the next client connection immediately moves on instead of retrying a dead IP.

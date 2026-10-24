@@ -57,7 +57,8 @@ type Config struct {
 	CfstDD         bool     `json:"cfst_dd"`          // cfst -dd: skip the download speed test
 	MinActiveBytes int64    `json:"min_active_bytes"` // a segment must move this much to count as success
 	MinActiveSpan  Duration `json:"min_active_span"`  // ...or keep flowing for at least this long
-	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with recent failures for this long
+	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with repeated failures for this long
+	DeadAfter      int      `json:"dead_after"`       // consecutive failures before dead-skip (stability-first)
 	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
 	StatusInterval Duration `json:"status_interval"`
 	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
@@ -86,7 +87,8 @@ func defaultConfig() Config {
 		MinActiveBytes: 64 * 1024,
 		MinActiveSpan:  Duration(2 * time.Second),
 		DeadSkip:       Duration(60 * time.Second),
-		ProvenWindow:   Duration(15 * time.Minute),
+		DeadAfter:      2,
+		ProvenWindow:   Duration(30 * time.Minute),
 		StatusInterval: Duration(60 * time.Second),
 		AdminAddr:      "127.0.0.1:18080",
 	}
@@ -181,7 +183,8 @@ func main() {
 	fs.BoolVar(&cfg.CfstDD, "cfst-dd", cfg.CfstDD, "skip the cfst download speed test (default on; set -cfst-dd=false to enable download tests)")
 	fs.Int64Var(&cfg.MinActiveBytes, "min-active-bytes", cfg.MinActiveBytes, "a segment must move this many bytes to count as success")
 	fs.DurationVar((*time.Duration)(&cfg.MinActiveSpan), "min-active-span", cfg.MinActiveSpan.Std(), "or data must keep flowing for at least this long (changing traffic)")
-	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with recent no-data/error failures for this long")
+	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with repeated failures for this long")
+	fs.IntVar(&cfg.DeadAfter, "dead-after", cfg.DeadAfter, "consecutive failures before an IP is dead-skipped")
 	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
 	fs.StringVar(&cfg.AdminAddr, "admin-addr", cfg.AdminAddr, "HTTP admin endpoint (JSON status); empty disables")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
@@ -226,7 +229,7 @@ func main() {
 	}
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
-		cfg.DeadSkip.Std(), cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(), cfg.MinActiveBytes)
+		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(), cfg.MinActiveBytes)
 	go fw.Serve(ctx, ln)
 
 	// Periodic status block.

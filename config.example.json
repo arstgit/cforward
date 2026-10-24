@@ -19,7 +19,8 @@
   "min_active_bytes": 65536,
   "min_active_span": "2s",
   "dead_skip": "60s",
-  "proven_window": "15m",
+  "dead_after": 2,
+  "proven_window": "30m",
   "status_interval": "60s",
   "admin_addr": "127.0.0.1:18080",
   "debug": false

@@ -28,19 +28,21 @@ type Forwarder struct {
 	targetPort     int
 	dialTimeout    time.Duration
 	noDataTimeout  time.Duration
-	deadSkip       time.Duration // IPs with no-data/error failures are skipped for this long
+	deadSkip       time.Duration // IPs with repeated failures are skipped for this long
+	deadAfter      int           // consecutive failures before an IP is dead-skipped
 	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
 	minActiveBytes int64         // a segment must carry this much traffic to count as success
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip, minActiveSpan, provenWindow time.Duration, minActiveBytes int64) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
 		dialTimeout:    dialTimeout,
 		noDataTimeout:  noDataTimeout,
 		deadSkip:       deadSkip,
+		deadAfter:      deadAfter,
 		provenWindow:   provenWindow,
 		minActiveSpan:  minActiveSpan,
 		minActiveBytes: minActiveBytes,
@@ -231,7 +233,7 @@ func (f *Forwarder) handle(client net.Conn) {
 
 		c2u, u2c := seg.c2u.Load(), seg.u2c.Load()
 		total := c2u + u2c
-		verdict, ok, markDead := f.classify(res, c2u, u2c, seg.flowSpan())
+		verdict, ok := f.classify(res, c2u, u2c, seg.flowSpan())
 		speed := 0.0
 		if res.dur > 0 {
 			speed = float64(total) / res.dur.Seconds() / 1e6 // MB/s, both directions
@@ -251,13 +253,12 @@ func (f *Forwarder) handle(client net.Conn) {
 			// Neutral: the client broke the connection, or connected but never sent a
 			// byte. Neither rewards nor penalizes the IP.
 		default:
-			// Fail: up_err, no_data, idle, no_response or tiny. Drives ConsecFail/CumFail
-			// AND marks the IP dead so the next connection skips it immediately — no
-			// retry storms on a dead IP.
+			// Fail: up_err, no_data, no_response or tiny. Drives ConsecFail/CumFail.
+			// Dead-skip only after -dead-after consecutive failures (stability-first:
+			// one bad segment on a flaky long-distance path must not burn the IP).
 			f.pool.ReportConn(used.IP, false, total, res.dur, retries)
-			if markDead {
-				f.pool.MarkDead(used.IP, f.deadSkip)
-				slog.Warn("upstream not serving traffic, marking dead",
+			if f.pool.MaybeMarkDead(used.IP, f.deadSkip, f.deadAfter) {
+				slog.Warn("upstream failed repeatedly, marking dead",
 					"ip", used.IP, "client", clientAddr, "verdict", verdict,
 					"up_bytes", c2u, "down_bytes", u2c,
 					"dur", res.dur.Round(time.Millisecond))
@@ -291,40 +292,39 @@ func (f *Forwarder) handle(client net.Conn) {
 
 // classify judges a finished segment. Only ACTIVE traffic is the gold standard:
 // the upstream sent data back with a real time span (ongoing, changing flow) or in
-// real volume. Everything else that is not a client-side fault is a failure AND
-// marks the IP dead, so the very next connection skips it — a path that connects
-// but produces no usable traffic (silent close, TLS-handshake-only, rejected) is a
-// dead signal; waiting for 3 strikes wastes the client's retries on the same IP.
+// real volume. Everything else that is not a client-side fault is a failure.
+// Stability-first: a single failed segment never marks an IP dead by itself —
+// dead-skipping requires -dead-after consecutive failures (decided by the caller),
+// so transient stalls on a flaky long-distance path do not churn the pool.
 //
 // Verdicts:
 //   - active:       real traffic flowed (u2c>0 and flowSpan/volume thresholds met) → success
-//   - up_err:       upstream-side transport error → failure + dead-skip + in-loop switch
-//   - no_data:      accepted TCP, nothing came back, ended quickly → failure + dead-skip
-//   - idle:         closed after silence with no data at all → failure + dead-skip
-//   - no_response:  one-way only, upstream never sent a byte → failure + dead-skip
-//   - tiny:         only a small exchange (a lone 200 / TLS handshake only) → failure + dead-skip
+//   - up_err:       upstream-side transport error → failure + in-loop switch (re-dial now)
+//   - no_data:      accepted TCP, nothing came back, ended quickly → failure
+//   - idle:         client connected but never sent a byte → NEUTRAL (client's choice)
+//   - no_response:  one-way only, upstream never sent a byte → failure
+//   - tiny:         only a small exchange (a lone 200 / TLS handshake only) → failure
 //   - client_err:   client broke the connection → neutral (not the IP's fault)
-func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok, markDead bool) {
+func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok bool) {
 	total := c2u + u2c
 	switch {
 	case res.upErr != nil:
-		return "up_err", false, true
+		return "up_err", false
 	case u2c > 0 && (flowSpan >= f.minActiveSpan || total >= f.minActiveBytes):
-		return "active", true, false
+		return "active", true
 	case res.clientErr != nil:
-		return "client_err", false, false
+		return "client_err", false
 	case total == 0 && res.dur < 2*time.Second:
-		// Accepted TCP but closed immediately with zero bytes: a rejecting/dead
-		// endpoint — failure + dead-skip.
-		return "no_data", false, true
+		// Accepted TCP but closed immediately with zero bytes: a rejecting/dead endpoint.
+		return "no_data", false
 	case total == 0:
-		// The client connected but never sent a byte for a while: switching IPs
-		// cannot help a silent client, and the IP did nothing wrong — neutral.
-		return "idle", false, false
+		// The client connected but never sent a byte for a while: switching IPs cannot
+		// help a silent client, and the IP did nothing wrong — neutral.
+		return "idle", false
 	case u2c == 0:
-		return "no_response", false, true
+		return "no_response", false
 	default:
-		return "tiny", false, true
+		return "tiny", false
 	}
 }
 
