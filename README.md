@@ -147,7 +147,7 @@ few KB instead of `-cfst-dl-count × url size` (~30 MB). Results are sorted by l
 live throughput (measured from real forwarded traffic, EMA α=0.3) fills the speed score
 after a few connections — initial ranking stays latency-monotonic either way. The only
 trade-off: "connects but cannot download" IPs are no longer filtered in one shot; live
-scoring and eviction clean them up within a few connections. For interactive proxy use
+scoring and eviction clean them up within a few connections. For interactive use
 (web browsing) latency-first ranking is usually preferable.
 
 For heavy-download workloads the download test can be re-enabled with
@@ -197,7 +197,7 @@ curl -s 127.0.0.1:18080/status | jq .pool.top[0]
 
 An Android shell app (foreground service + status UI) lives in
 [`android/`](android/) — the same Go core, cross-compiled and bundled. See
-[`android/README.md`](android/README.md) for build and proxy-app setup.
+[`android/README.md`](android/README.md) for build and setup.
 
 ## Development
 

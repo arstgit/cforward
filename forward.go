@@ -292,7 +292,7 @@ func (f *Forwarder) handle(client net.Conn) {
 // classify judges a finished segment. Only ACTIVE traffic is the gold standard:
 // the upstream sent data back with a real time span (ongoing, changing flow) or in
 // real volume. Everything else that is not a client-side fault is a failure AND
-// marks the IP dead, so the very next connection skips it — a proxy that connects
+// marks the IP dead, so the very next connection skips it — a path that connects
 // but produces no usable traffic (silent close, TLS-handshake-only, rejected) is a
 // dead signal; waiting for 3 strikes wastes the client's retries on the same IP.
 //
