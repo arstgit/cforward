@@ -15,6 +15,8 @@
 /android/build/
 /android/local.properties
 /android/app/build/
-/android/app/src/main/assets/bin/
-/android/app/src/main/assets/cfst/
-!/android/app/src/main/assets/cfst/LICENSE.txt
+# binaries are ignored per-file so the directories (and the bundled GPL-3.0
+# license text for cfst) stay tracked
+/android/app/src/main/assets/bin/cforward
+/android/app/src/main/assets/cfst/cfst
+/android/app/src/main/assets/cfst/ip.txt

@@ -22,6 +22,7 @@ GRADLE_HOME="${GRADLE_HOME:-/tmp/gradle-8.9}"
 
 # 1) cross-compile the Go core
 echo "== cross-compiling cforward for android/arm64"
+mkdir -p "$ROOT/android/app/src/main/assets/bin" "$ROOT/android/app/src/main/assets/cfst"
 (cd "$ROOT" && CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build \
     -ldflags "-s -w -X main.version=$(date +%Y%m%d)-android" \
     -o android/app/src/main/assets/bin/cforward .)
