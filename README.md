@@ -197,7 +197,7 @@ curl -s 127.0.0.1:18080/status | jq .pool.top[0]
 
 An Android shell app (foreground service + status UI) lives in
 [`android/`](android/) — the same Go core, cross-compiled and bundled. See
-[`android/README.md`](android/README.md) for build and Exclave setup.
+[`android/README.md`](android/README.md) for build and proxy-app setup.
 
 ## Development
 
