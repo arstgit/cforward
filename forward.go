@@ -39,11 +39,13 @@ type Forwarder struct {
 	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
 	maxPerIP       int           // soft cap on concurrent segments per IP (0 = unlimited)
 	maxPerClient   int           // hard cap on concurrent segments per client address (0 = unlimited)
+	stallTimeout   time.Duration // upstream sent nothing new for this long while the client spoke → cut
+	stallWindow    time.Duration // only check for stalls while the segment is younger than this
 	minActiveBytes int64         // a segment must carry this much traffic to count as success
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP, maxPerClient int) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP, maxPerClient int, stallTimeout, stallWindow time.Duration) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
@@ -56,6 +58,8 @@ func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSk
 		minActiveBytes: minActiveBytes,
 		maxPerIP:       maxPerIP,
 		maxPerClient:   maxPerClient,
+		stallTimeout:   stallTimeout,
+		stallWindow:    stallWindow,
 	}
 }
 
@@ -409,6 +413,8 @@ func (f *Forwarder) handle(client net.Conn) {
 func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok bool) {
 	total := c2u + u2c
 	switch {
+	case res.stalled:
+		return "stall", false
 	case res.upErr != nil:
 		return "up_err", false
 	case u2c > 0 && total >= minActiveTotal && (flowSpan >= f.minActiveSpan || total >= f.minActiveBytes):
@@ -436,6 +442,7 @@ type relayResult struct {
 	clientErr error // client-side error → give up
 	clientEOF bool  // clean client EOF (half-close; client can still receive)
 	upEOF     bool  // clean upstream EOF
+	stalled   bool  // stall guard cut the connection: upstream stopped answering
 }
 
 // relay copies bytes in both directions until both directions end.
@@ -481,6 +488,47 @@ func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 				t0 := clientEOFat.Load()
 				if t0 != 0 && seg.u2c.Load() == u2cAtEOF.Load() &&
 					time.Since(time.Unix(0, t0)) > f.noDataTimeout {
+					b.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	// Stall guard: while the segment is young, if the client has spoken (c2u>0)
+	// but the upstream produced no NEW bytes for stallTimeout, the path is
+	// half-dead — the client keeps waiting forever ("connected but nothing comes
+	// back"). Cut the connection so the client notices and reconnects (the new
+	// connection load-balances elsewhere). Recorded as a stall failure.
+	var lastU2C atomic.Int64
+	var lastU2CAt atomic.Int64
+	lastU2CAt.Store(time.Now().UnixNano())
+	var stalled atomic.Bool
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if f.stallTimeout <= 0 {
+					return
+				}
+				if f.stallWindow > 0 && time.Since(start) > f.stallWindow {
+					return // past the check window: legit long-polling etc.
+				}
+				u := seg.u2c.Load()
+				now := time.Now()
+				if u != lastU2C.Load() {
+					lastU2C.Store(u)
+					lastU2CAt.Store(now.UnixNano())
+					continue
+				}
+				if seg.c2u.Load() > 0 &&
+					time.Since(time.Unix(0, lastU2CAt.Load())) > f.stallTimeout {
+					stalled.Store(true)
+					a.Close()
 					b.Close()
 					return
 				}
@@ -546,7 +594,7 @@ func (f *Forwarder) relay(a, b net.Conn, seg *segInfo) relayResult {
 	go copyDir("up", b, a)     // read upstream → write client
 	wg.Wait()
 
-	res := relayResult{dur: time.Since(start)}
+	res := relayResult{dur: time.Since(start), stalled: stalled.Load()}
 	// Combine both directions. Critical rules:
 	// 1. errors.Is(net.ErrClosed) is a fake error caused by our own closes → ignore.
 	// 2. If any real error exists, every EOF is suspect (our closes can produce fake

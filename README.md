@@ -98,6 +98,8 @@ fall back to defaults.
 | `-proven-window` | `30m` | IPs with ACTIVE traffic within this window are dialed first |
 | `-max-per-ip` | `12` | soft cap on concurrent segments per IP (load-balances storms across proven IPs; 0 = unlimited) |
 | `-max-per-client` | `32` | hard cap on concurrent segments per client (stops connection storms; 0 = unlimited) |
+| `-stall-timeout` | `30s` | upstream silent for this long while the client spoke → cut the half-dead connection (0 = off) |
+| `-stall-window` | `5m` | only check for stalls while a segment is younger than this |
 | `-admin-addr` | `127.0.0.1:18080` | HTTP admin endpoint (JSON status); empty disables |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
@@ -143,7 +145,10 @@ first, and `-max-per-ip` caps how many concurrent segments a single IP carries, 
 client's connection storm spreads across several known-good IPs instead of piling
 onto one (no single point of failure).
 A client that connects but never sends a byte (`idle`) is neutral — switching cannot
-help a silent client. Stability-first: an IP is only dead-skipped after
+help a silent client. **Half-dead paths are cut**: while a segment is younger than
+`-stall-window`, if the client has spoken but the upstream produced no new bytes for
+`-stall-timeout`, the connection is closed (recorded as a `stall` failure) so the
+client notices and reconnects onto a healthy IP instead of waiting forever. Stability-first: an IP is only dead-skipped after
 `-dead-after` consecutive failed segments, so a single transient stall on a flaky
 long-distance path never burns the IP or churns the pool.
 

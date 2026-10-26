@@ -93,7 +93,7 @@ func TestSwitchOnUpstreamDeath(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -177,7 +177,7 @@ func TestDialFallback(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 20, Speed: 40},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 
@@ -505,7 +505,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 // classify 单元测试：只有"有变化的流量"才算成功。
 func TestClassify(t *testing.T) {
-	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 1, 2*time.Second, time.Hour, 64*1024, 0, 0)
+	f := NewForwarder(nil, 443, time.Second, 10*time.Second, time.Minute, 1, 2*time.Second, time.Hour, 64*1024, 0, 0, 0, 0)
 	cases := []struct {
 		name     string
 		res      relayResult
@@ -570,7 +570,7 @@ func TestTinyIsNeutral(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1024, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1024, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -638,7 +638,7 @@ func TestNoDataMarkedDead(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -693,7 +693,7 @@ func TestClientRSTNeutral(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -734,7 +734,7 @@ func TestPreferProvenIP(t *testing.T) {
 	pool.entries["127.0.0.2"].LastActive = time.Now()
 	pool.mu.Unlock()
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -773,7 +773,7 @@ func TestZombieCleanup(t *testing.T) {
 	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
 	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
 
-	fw := NewForwarder(pool, port, time.Second, 1*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 1*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -828,7 +828,7 @@ func TestDeadAfterThreshold(t *testing.T) {
 		{IP: "127.0.0.2", Latency: 500, Speed: 5},
 	})
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1, 0, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 2, time.Hour, time.Hour, 1, 0, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -912,7 +912,7 @@ func TestProvenLoadBalance(t *testing.T) {
 		}
 	}()
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 4, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 4, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -981,7 +981,7 @@ func TestProvenOverloadFallsBack(t *testing.T) {
 		}
 	}()
 
-	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 2, 0)
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1, time.Hour, time.Hour, 1, 2, 0, 0, 0)
 	ln := listenOn(t, "127.0.0.1", 0)
 	defer ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1009,4 +1009,66 @@ func TestProvenOverloadFallsBack(t *testing.T) {
 		t.Fatalf("unproven pool should take over: %+v", pB)
 	}
 	t.Logf("fallback OK: A(proven, at cap) attempts=%d | B(unproven) attempts=%d", pA.Attempts, pB.Attempts)
+}
+
+// 停滞检测：客户端发过数据、上游回了一点后挂死 → stall-timeout 后掐断并记失败。
+func TestUpstreamStallKilled(t *testing.T) {
+	port := freePort(t)
+	// up1: 收到请求后回 100B，然后永远挂住（不回也不关）——半死路径
+	ln1 := listenOn(t, "127.0.0.1", port)
+	defer ln1.Close()
+	go func() {
+		for {
+			c, err := ln1.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				c.Read(buf)
+				c.Write(make([]byte, 100))
+				select {} // 挂死
+			}(c)
+		}
+	}()
+
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{{IP: "127.0.0.1", Latency: 10, Speed: 50}})
+
+	fw := NewForwarder(pool, port, time.Second, 2*time.Second, time.Minute, 1,
+		time.Hour, time.Hour, 1, 0, 0, 1*time.Second, 30*time.Second)
+	ln := listenOn(t, "127.0.0.1", 0)
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fw.Serve(ctx, ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("request"))
+	buf := make([]byte, 512)
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c.Read(buf); err != nil || n != 100 {
+		t.Fatalf("expected the 100B answer, got n=%d err=%v", n, err)
+	}
+	// 之后上游挂死：stall-timeout=1s 后连接应被掐断，客户端读到错误
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err = c.Read(buf)
+	if err == nil {
+		t.Fatal("stalled connection should be cut, client should see an error")
+	}
+	time.Sleep(200 * time.Millisecond)
+	e, _ := poolTop(pool, "127.0.0.1")
+	if e == nil || e.ConsecFail == 0 || e.CumFail == 0 {
+		t.Fatalf("stall must count as a failure: %+v", e)
+	}
+	segs := 0
+	activeSegs.Range(func(_, _ any) bool { segs++; return true })
+	if segs != 0 {
+		t.Fatalf("stalled segment should be gone, active=%d", segs)
+	}
+	t.Logf("stall-kill OK: cum_fail=%d", e.CumFail)
 }

@@ -62,6 +62,8 @@ type Config struct {
 	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
 	MaxPerIP       int      `json:"max_per_ip"`       // soft cap on concurrent segments per IP (0 = unlimited)
 	MaxPerClient   int      `json:"max_per_client"`   // hard cap on concurrent segments per client (0 = unlimited)
+	StallTimeout   Duration `json:"stall_timeout"`    // upstream silent for this long while the client spoke → cut
+	StallWindow    Duration `json:"stall_window"`     // only check stalls while a segment is younger than this
 	StatusInterval Duration `json:"status_interval"`
 	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
 	Debug          bool     `json:"debug"`
@@ -93,6 +95,8 @@ func defaultConfig() Config {
 		ProvenWindow:   Duration(30 * time.Minute),
 		MaxPerIP:       12,
 		MaxPerClient:   32,
+		StallTimeout:   Duration(30 * time.Second),
+		StallWindow:    Duration(5 * time.Minute),
 		StatusInterval: Duration(60 * time.Second),
 		AdminAddr:      "127.0.0.1:18080",
 	}
@@ -192,6 +196,8 @@ func main() {
 	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
 	fs.IntVar(&cfg.MaxPerIP, "max-per-ip", cfg.MaxPerIP, "soft cap on concurrent segments per IP (0 = unlimited)")
 	fs.IntVar(&cfg.MaxPerClient, "max-per-client", cfg.MaxPerClient, "hard cap on concurrent segments per client (0 = unlimited)")
+	fs.DurationVar((*time.Duration)(&cfg.StallTimeout), "stall-timeout", cfg.StallTimeout.Std(), "upstream silent for this long while the client spoke → cut the connection (0 = off)")
+	fs.DurationVar((*time.Duration)(&cfg.StallWindow), "stall-window", cfg.StallWindow.Std(), "only check for stalls while a segment is younger than this")
 	fs.StringVar(&cfg.AdminAddr, "admin-addr", cfg.AdminAddr, "HTTP admin endpoint (JSON status); empty disables")
 	fs.DurationVar((*time.Duration)(&cfg.StatusInterval), "status-interval", cfg.StatusInterval.Std(), "status block interval")
 	var showVersion bool
@@ -236,7 +242,8 @@ func main() {
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
 		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(),
-		cfg.MinActiveBytes, cfg.MaxPerIP, cfg.MaxPerClient)
+		cfg.MinActiveBytes, cfg.MaxPerIP, cfg.MaxPerClient,
+		cfg.StallTimeout.Std(), cfg.StallWindow.Std())
 	go fw.Serve(ctx, ln)
 
 	// Periodic status block.
