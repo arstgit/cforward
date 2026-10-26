@@ -82,7 +82,6 @@ class ForwardService : Service() {
           "cfst_dir": "${File(filesDir, "cfst").absolutePath}",
           "cfst_dd": ${prefs.getBoolean("cfst_dd", true)},
           "dead_skip": "60s",
-          "proven_window": "15m",
           "admin_addr": "127.0.0.1:18080"
         }
         """.trimIndent()

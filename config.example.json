@@ -20,7 +20,6 @@
   "min_active_span": "2s",
   "dead_skip": "60s",
   "dead_after": 2,
-  "proven_window": "30m",
   "max_per_ip": 12,
   "max_per_client": 32,
   "stall_timeout": "30s",

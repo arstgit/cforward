@@ -59,8 +59,7 @@ type Config struct {
 	MinActiveSpan  Duration `json:"min_active_span"`  // ...or keep flowing for at least this long
 	DeadSkip       Duration `json:"dead_skip"`        // skip IPs with repeated failures for this long
 	DeadAfter      int      `json:"dead_after"`       // consecutive failures before dead-skip (stability-first)
-	ProvenWindow   Duration `json:"proven_window"`    // IPs with ACTIVE traffic within this window are dialed first
-	MaxPerIP       int      `json:"max_per_ip"`       // soft cap on concurrent segments per IP (0 = unlimited)
+	MaxPerIP       int      `json:"max_per_ip"`       // soft cap on concurrent segments per TRIAL IP (0 = unlimited)
 	MaxPerClient   int      `json:"max_per_client"`   // hard cap on concurrent segments per client (0 = unlimited)
 	StallTimeout   Duration `json:"stall_timeout"`    // upstream silent for this long while the client spoke → cut
 	StallWindow    Duration `json:"stall_window"`     // only check stalls while a segment is younger than this
@@ -92,7 +91,6 @@ func defaultConfig() Config {
 		MinActiveSpan:  Duration(2 * time.Second),
 		DeadSkip:       Duration(60 * time.Second),
 		DeadAfter:      2,
-		ProvenWindow:   Duration(30 * time.Minute),
 		MaxPerIP:       12,
 		MaxPerClient:   32,
 		StallTimeout:   Duration(30 * time.Second),
@@ -193,7 +191,6 @@ func main() {
 	fs.DurationVar((*time.Duration)(&cfg.MinActiveSpan), "min-active-span", cfg.MinActiveSpan.Std(), "or data must keep flowing for at least this long (changing traffic)")
 	fs.DurationVar((*time.Duration)(&cfg.DeadSkip), "dead-skip", cfg.DeadSkip.Std(), "skip IPs with repeated failures for this long")
 	fs.IntVar(&cfg.DeadAfter, "dead-after", cfg.DeadAfter, "consecutive failures before an IP is dead-skipped")
-	fs.DurationVar((*time.Duration)(&cfg.ProvenWindow), "proven-window", cfg.ProvenWindow.Std(), "IPs with ACTIVE traffic within this window are dialed first")
 	fs.IntVar(&cfg.MaxPerIP, "max-per-ip", cfg.MaxPerIP, "soft cap on concurrent segments per IP (0 = unlimited)")
 	fs.IntVar(&cfg.MaxPerClient, "max-per-client", cfg.MaxPerClient, "hard cap on concurrent segments per client (0 = unlimited)")
 	fs.DurationVar((*time.Duration)(&cfg.StallTimeout), "stall-timeout", cfg.StallTimeout.Std(), "upstream silent for this long while the client spoke → cut the connection (0 = off)")
@@ -241,7 +238,7 @@ func main() {
 	}
 	slog.Info("forwarder listening", "addr", cfg.Listen, "target_port", cfg.TargetPort)
 	fw := NewForwarder(pool, cfg.TargetPort, cfg.DialTimeout.Std(), cfg.NoDataTimeout.Std(),
-		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(), cfg.ProvenWindow.Std(),
+		cfg.DeadSkip.Std(), cfg.DeadAfter, cfg.MinActiveSpan.Std(),
 		cfg.MinActiveBytes, cfg.MaxPerIP, cfg.MaxPerClient,
 		cfg.StallTimeout.Std(), cfg.StallWindow.Std())
 	go fw.Serve(ctx, ln)
@@ -413,7 +410,7 @@ func writeStatusJSON(w http.ResponseWriter, cfg *Config, pool *Pool, sched *Sche
 			"min":          cfg.PoolMin,
 			"max":          cfg.PoolMax,
 			"best_score":   round2(pool.BestScore()),
-			"proven":       pool.ProvenCount(cfg.ProvenWindow.Std()),
+			"verified":     pool.VerifiedCount(),
 			"dead_skipped": pool.DeadSkippedCount(),
 			"top":          topList,
 		},

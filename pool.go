@@ -59,8 +59,9 @@ type IPEntry struct {
 	CumFail    int `json:"cum_fail"`    // cumulative failures (eviction trigger)
 
 	LastSeenRound int       `json:"last_seen_round"` // last cfst round this IP appeared in
-	DeadUntil     time.Time `json:"dead_until"`      // dials skip this IP until this time (no-data failures)
-	LastActive    time.Time `json:"last_active"`     // last segment with ACTIVE traffic (proven-good preference)
+	DeadUntil     time.Time `json:"dead_until"`      // dials skip this IP until this time (repeated failures)
+	LastActive    time.Time `json:"last_active"`     // last data exchange (status display)
+	Verified      bool      `json:"verified"`        // has served REAL traffic: permanently preferred until evicted
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -437,7 +438,8 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	} else {
 		e.Successes++
 		e.ConsecFail = 0
-		e.LastActive = time.Now() // proven: carried real traffic
+		e.LastActive = time.Now()
+		e.Verified = true // carried real traffic: locked in as a good IP
 	}
 	if ok && duration > 0 && bytes > 0 {
 		speed := float64(bytes) / duration.Seconds() / 1e6 // MB/s
@@ -458,14 +460,13 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	p.notify()
 }
 
-// ProvenCount returns how many IPs have ACTIVE traffic within the window.
-func (p *Pool) ProvenCount(window time.Duration) int {
+// VerifiedCount returns how many IPs have served real traffic (locked-in good IPs).
+func (p *Pool) VerifiedCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := 0
-	now := time.Now()
 	for _, e := range p.entries {
-		if !e.LastActive.IsZero() && now.Sub(e.LastActive) <= window {
+		if e.Verified {
 			n++
 		}
 	}
@@ -491,10 +492,6 @@ func (p *Pool) DeadSkippedCount() int {
 // handshake with no app data). It counts as a sample so live stats take over, but
 // does not touch Successes, TransFail, ConsecFail or CumFail — the IP is neither
 // rewarded nor burned by client behavior.
-//
-// For a tiny exchange the LastActive stamp is refreshed: a completed TCP+TLS
-// exchange proves the path is usable, so under a connection storm the pool keeps
-// a healthy set of proven IPs to load-balance across instead of starving to one.
 func (p *Pool) ReportNeutral(ip string, retries int) {
 	p.mu.Lock()
 	e := p.entries[ip]

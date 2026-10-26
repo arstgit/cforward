@@ -36,8 +36,7 @@ type Forwarder struct {
 	noDataTimeout  time.Duration
 	deadSkip       time.Duration // IPs with repeated failures are skipped for this long
 	deadAfter      int           // consecutive failures before an IP is dead-skipped
-	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
-	maxPerIP       int           // soft cap on concurrent segments per IP (0 = unlimited)
+	maxPerIP       int           // soft cap on concurrent segments per TRIAL IP (0 = unlimited)
 	maxPerClient   int           // hard cap on concurrent segments per client address (0 = unlimited)
 	stallTimeout   time.Duration // upstream sent nothing new for this long while the client spoke → cut
 	stallWindow    time.Duration // only check for stalls while the segment is younger than this
@@ -45,7 +44,7 @@ type Forwarder struct {
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP, maxPerClient int, stallTimeout, stallWindow time.Duration) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan time.Duration, minActiveBytes int64, maxPerIP, maxPerClient int, stallTimeout, stallWindow time.Duration) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
@@ -53,7 +52,6 @@ func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSk
 		noDataTimeout:  noDataTimeout,
 		deadSkip:       deadSkip,
 		deadAfter:      deadAfter,
-		provenWindow:   provenWindow,
 		minActiveSpan:  minActiveSpan,
 		minActiveBytes: minActiveBytes,
 		maxPerIP:       maxPerIP,
@@ -141,62 +139,52 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		return conn, latMs, true
 	}
 
-	proven := func(cand *IPEntry) bool {
-		return !cand.LastActive.IsZero() && time.Since(cand.LastActive) <= f.provenWindow
-	}
-	// Pass 1: proven-good IPs (recent active traffic). Load-balanced: among proven
-	// candidates, those with the fewest live segments go first (ties broken by
-	// score), so a client's connection storm spreads across several known-good
-	// IPs instead of piling onto a single one (single point of failure).
-	var provenList []*IPEntry
+	// Layer 1: VERIFIED IPs — those that have served real traffic. Good IPs are
+	// scarce and precious, so every connection goes to them first (load-balanced
+	// among themselves only); no time window, they stay preferred until evicted.
+	var verified []*IPEntry
 	for _, cand := range candidates {
-		if skip[cand.IP] || !proven(cand) {
+		if skip[cand.IP] || time.Now().Before(cand.DeadUntil) {
 			continue
 		}
-		provenList = append(provenList, cand)
+		if cand.Verified {
+			verified = append(verified, cand)
+		}
 	}
-	sort.Slice(provenList, func(i, j int) bool {
-		ci, cj := f.activeCount(provenList[i].IP), f.activeCount(provenList[j].IP)
+	sort.Slice(verified, func(i, j int) bool {
+		ci, cj := f.activeCount(verified[i].IP), f.activeCount(verified[j].IP)
 		if ci != cj {
 			return ci < cj
 		}
-		return provenList[i].Score() > provenList[j].Score()
+		return verified[i].Score() > verified[j].Score()
 	})
-	for _, cand := range provenList {
-		if f.atLimit(cand.IP) {
-			// Overloaded: let the unproven pool take over instead of piling every
-			// connection onto one proven IP (single point of failure).
-			continue
-		}
+	for _, cand := range verified {
 		if conn, lat, ok := tryDial(cand); ok {
 			return conn, cand, retries, lat
 		}
 	}
-	// Pass 2: everything else (unproven fallbacks and cold-start), load-balanced the
-	// same way.
-	var rest []*IPEntry
+
+	// Layer 2: TRIAL pool — unverified IPs, tried only when no verified IP works.
+	// A trial IP that serves real traffic gets Verified=true and moves up.
+	var trial []*IPEntry
 	for _, cand := range candidates {
-		if skip[cand.IP] {
+		if skip[cand.IP] || time.Now().Before(cand.DeadUntil) {
 			continue
 		}
-		if time.Now().Before(cand.DeadUntil) {
-			// Temporarily dead (recent failures): skip without counting a retry.
-			continue
-		}
-		rest = append(rest, cand)
+		trial = append(trial, cand)
 	}
-	sort.Slice(rest, func(i, j int) bool {
-		ci, cj := f.activeCount(rest[i].IP), f.activeCount(rest[j].IP)
+	sort.Slice(trial, func(i, j int) bool {
+		ci, cj := f.activeCount(trial[i].IP), f.activeCount(trial[j].IP)
 		if ci != cj {
 			return ci < cj
 		}
-		return rest[i].Score() > rest[j].Score()
+		return trial[i].Score() > trial[j].Score()
 	})
 	var leastLoaded *IPEntry
-	for _, cand := range rest {
+	for _, cand := range trial {
 		if f.atLimit(cand.IP) {
 			if leastLoaded == nil {
-				leastLoaded = cand // rest is sorted by load: first over-limit one is least loaded
+				leastLoaded = cand // trial sorted by load: first over-limit one is least loaded
 			}
 			continue
 		}
@@ -205,8 +193,6 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 		}
 	}
 	if leastLoaded != nil {
-		// Every candidate is over the soft cap: still serve the least-loaded one
-		// rather than rejecting the connection.
 		if conn, lat, ok := tryDial(leastLoaded); ok {
 			return conn, leastLoaded, retries, lat
 		}

@@ -95,8 +95,7 @@ fall back to defaults.
 | `-min-active-span` | `2s` | or data must keep flowing for at least this long (changing traffic) |
 | `-dead-skip` | `60s` | skip IPs with repeated failures for this long |
 | `-dead-after` | `2` | consecutive failures before an IP is dead-skipped (stability-first) |
-| `-proven-window` | `30m` | IPs with ACTIVE traffic within this window are dialed first |
-| `-max-per-ip` | `12` | soft cap on concurrent segments per IP (load-balances storms across proven IPs; 0 = unlimited) |
+| `-max-per-ip` | `12` | soft cap on concurrent segments per TRIAL IP (verified IPs are uncapped; 0 = unlimited) |
 | `-max-per-client` | `32` | hard cap on concurrent segments per client (stops connection storms; 0 = unlimited) |
 | `-stall-timeout` | `30s` | upstream silent for this long while the client spoke → cut the half-dead connection (0 = off) |
 | `-stall-window` | `5m` | only check for stalls while a segment is younger than this |
@@ -138,12 +137,14 @@ handshake with no data, a silent close, a rejected connection — is a failure A
 the IP dead for `-dead-skip`, so the very next connection moves on; retry storms never
 pile onto a dead IP. Only client-side faults are neutral. Failures drive ConsecFail (score
 ×0.1 after 3) and CumFail (`-fail-evict` evicts); a fresh cfst round revives dead-flagged
-IPs. Dials prefer IPs **proven by recent active traffic** (`-proven-window`): a
-mid-session switch lands on a known-good path instead of an untested high-score one.
-Proven candidates are **load-balanced** — the ones with the fewest live segments go
-first, and `-max-per-ip` caps how many concurrent segments a single IP carries, so a
-client's connection storm spreads across several known-good IPs instead of piling
-onto one (no single point of failure).
+IPs. Selection is a **two-pool model** — most scanned IPs are unusable, and the few that
+work are discovered only by real traffic, so good IPs are precious:
+
+- **Verified pool**: IPs that have served real traffic (`Verified` is permanent, no
+  time window) — every connection goes here first, load-balanced among themselves.
+- **Trial pool**: everything else, used only when no verified IP works; a trial IP
+  that serves real traffic is promoted and locked in. Trial IPs respect
+  `-max-per-ip` so one bad IP cannot absorb the whole pool.
 A client that connects but never sends a byte (`idle`) is neutral — switching cannot
 help a silent client. **Half-dead paths are cut**: while a segment is younger than
 `-stall-window`, if the client has spoken but the upstream produced no new bytes for
