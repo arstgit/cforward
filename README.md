@@ -97,6 +97,7 @@ fall back to defaults.
 | `-dead-after` | `2` | consecutive failures before an IP is dead-skipped (stability-first) |
 | `-proven-window` | `30m` | IPs with ACTIVE traffic within this window are dialed first |
 | `-max-per-ip` | `12` | soft cap on concurrent segments per IP (load-balances storms across proven IPs; 0 = unlimited) |
+| `-max-per-client` | `32` | hard cap on concurrent segments per client (stops connection storms; 0 = unlimited) |
 | `-admin-addr` | `127.0.0.1:18080` | HTTP admin endpoint (JSON status); empty disables |
 | `-status-interval` | `60s` | status block interval |
 | `-version` | | print version and exit |
@@ -128,7 +129,8 @@ Score = `0.4 × latency + 0.3 × speed + 0.2 × success + 0.1 × retry`, each no
 
 **Only active traffic is the gold standard.** A segment counts as a success only when the
 upstream sent data back with a real time span (`-min-active-span`, changing/ongoing flow)
-or in real volume (`-min-active-bytes`). Any segment that ends without such traffic and is
+or in real volume (`-min-active-bytes`), with a minimum total of 8KB so a slow TLS
+handshake with no app data cannot masquerade as active traffic. Any segment that ends without such traffic and is
 not a client-side fault — TCP-only silence, a lone small response ("just a 200"), a TLS
 handshake with no data, a silent close, a rejected connection — is a failure AND marks
 the IP dead for `-dead-skip`, so the very next connection moves on; retry storms never

@@ -18,6 +18,11 @@ import (
 // unacknowledged for this long abort the connection and surface as read/write errors.
 const tcpUserTimeoutOpt = 18
 
+// minActiveTotal is the minimum bytes a segment must move (both directions) to be
+// judged "active" at all — a lone TLS handshake (~1-4KB) must not count as real
+// traffic just because slow delivery stretched its flow span.
+const minActiveTotal = 8 * 1024
+
 // activeConns counts live client connections (used by the status block).
 var activeConns atomic.Int64
 
@@ -33,11 +38,12 @@ type Forwarder struct {
 	deadAfter      int           // consecutive failures before an IP is dead-skipped
 	provenWindow   time.Duration // IPs with ACTIVE traffic within this window are dialed first
 	maxPerIP       int           // soft cap on concurrent segments per IP (0 = unlimited)
+	maxPerClient   int           // hard cap on concurrent segments per client address (0 = unlimited)
 	minActiveBytes int64         // a segment must carry this much traffic to count as success
 	minActiveSpan  time.Duration // ...or data must keep flowing for at least this long
 }
 
-func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP int) *Forwarder {
+func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSkip time.Duration, deadAfter int, minActiveSpan, provenWindow time.Duration, minActiveBytes int64, maxPerIP, maxPerClient int) *Forwarder {
 	return &Forwarder{
 		pool:           pool,
 		targetPort:     targetPort,
@@ -49,6 +55,7 @@ func NewForwarder(pool *Pool, targetPort int, dialTimeout, noDataTimeout, deadSk
 		minActiveSpan:  minActiveSpan,
 		minActiveBytes: minActiveBytes,
 		maxPerIP:       maxPerIP,
+		maxPerClient:   maxPerClient,
 	}
 }
 
@@ -203,6 +210,18 @@ func (f *Forwarder) dialBest(skip map[string]bool) (net.Conn, *IPEntry, int, flo
 	return nil, nil, retries, 0
 }
 
+// clientCount returns how many live relay segments currently belong to a client address.
+func (f *Forwarder) clientCount(addr string) int {
+	n := 0
+	activeSegs.Range(func(_, v any) bool {
+		if v.(*segInfo).clientAddr == addr {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
 // activeCount returns how many live relay segments currently use this IP.
 func (f *Forwarder) activeCount(ip string) int {
 	n := 0
@@ -279,6 +298,15 @@ func (f *Forwarder) handle(client net.Conn) {
 	activeConns.Add(1)
 	defer activeConns.Add(-1)
 	clientAddr := client.RemoteAddr().String()
+
+	// Hard cap on concurrent segments per client: a misbehaving client that opens
+	// a connection storm must not drown the relay. Count only our own live
+	// segments (the listener is the only thing sharing the address space).
+	if f.maxPerClient > 0 && f.clientCount(clientAddr) >= f.maxPerClient {
+		slog.Warn("client over concurrent cap, rejecting", "client", clientAddr,
+			"cap", f.maxPerClient)
+		return
+	}
 
 	skip := make(map[string]bool)
 	upstream, used, retries, latMs := f.dialBest(skip)
@@ -383,7 +411,7 @@ func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Dura
 	switch {
 	case res.upErr != nil:
 		return "up_err", false
-	case u2c > 0 && (flowSpan >= f.minActiveSpan || total >= f.minActiveBytes):
+	case u2c > 0 && total >= minActiveTotal && (flowSpan >= f.minActiveSpan || total >= f.minActiveBytes):
 		return "active", true
 	case res.clientErr != nil:
 		return "client_err", false
