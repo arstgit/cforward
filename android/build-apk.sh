@@ -67,7 +67,8 @@ if [ ! -d "$GRADLE_HOME" ]; then
     unzip -q -o gradle-8.9.zip
 fi
 
-# 5) build
+# 5) build (re-enter the script dir: earlier steps may have changed the cwd)
+cd "$(dirname "$0")"
 echo "== gradle assembleDebug"
 "$GRADLE_HOME/bin/gradle" -p . assembleDebug --no-daemon
 echo "== APK: app/build/outputs/apk/debug/app-debug.apk"
