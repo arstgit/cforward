@@ -125,15 +125,14 @@ class ForwardService : Service() {
         val bin = File(filesDir, "bin/cforward").absolutePath
         val cfg = File(filesDir, "config.json").absolutePath
         val log = File(filesDir, "cforward.log")
-        val pb = ProcessBuilder(bin, "-config", cfg)
-        pb.redirectErrorStream(true)
-        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(log))
-        try {
-            process = pb.start()
-        } catch (e: IOException) {
-            // e.g. SELinux refused to exec the binary from the app data dir
-            Log.e(TAG, "exec failed", e)
-            val diag = StringBuilder("exec failed: ${e}\n")
+        val args = listOf("-config", cfg)
+
+        // Some hardened ROMs block execve() of binaries in the app data dir
+        // (SELinux: no execute_no_trans on app_data_file). Fall back to loading
+        // the static PIE via /system/bin/linker64, which only needs read+mmap.
+        process = startWithFallback(bin, args, log)
+        if (process == null) {
+            val diag = StringBuilder("exec failed (direct + linker64)\n")
             diag.append("canExecute=").append(File(bin).canExecute())
             diag.append(" perms=").append(permsOf(File(bin)))
             diag.append("\n").append(lsLZ(File(bin)))
@@ -141,6 +140,30 @@ class ForwardService : Service() {
             return
         }
         monitor()
+    }
+
+    private fun startWithFallback(bin: String, args: List<String>, log: File): Process? {
+        // 1) direct execve
+        try {
+            val pb = ProcessBuilder(listOf(bin) + args)
+            pb.redirectErrorStream(true)
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(log))
+            return pb.start()
+        } catch (e: IOException) {
+            writeLog("direct exec failed (${e}); retrying via linker64")
+        }
+        // 2) linker64 manual load (bypasses execute_no_trans)
+        try {
+            val pb = ProcessBuilder(listOf("/system/bin/linker64", bin) + args)
+            pb.redirectErrorStream(true)
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(log))
+            val p = pb.start()
+            writeLog("started via /system/bin/linker64")
+            return p
+        } catch (e: IOException) {
+            Log.e(TAG, "linker64 exec failed", e)
+        }
+        return null
     }
 
     private fun permsOf(f: File): String {

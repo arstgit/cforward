@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -93,7 +94,19 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstR
 		return nil, fmt.Errorf("cfst path abs: %v", err)
 	}
 
-	cmd := exec.CommandContext(ctx, cfstPath, cfstArgs(o)...)
+	// On Android, some ROM SELinux policies forbid execve() of binaries in the app
+	// data dir (EACCES on app_data_file). Loading the static PIE via
+	// /system/bin/linker64 only needs read+mmap, so route through sh there.
+	var cmd *exec.Cmd
+	if runtime.GOOS == "android" {
+		argLine := "'" + cfstPath + "'"
+		for _, a := range cfstArgs(o) {
+			argLine += " '" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+		}
+		cmd = exec.CommandContext(ctx, "/system/bin/sh", "-c", "/system/bin/linker64 "+argLine)
+	} else {
+		cmd = exec.CommandContext(ctx, cfstPath, cfstArgs(o)...)
+	}
 	cmd.Dir = cfstDir
 
 	start := time.Now()
