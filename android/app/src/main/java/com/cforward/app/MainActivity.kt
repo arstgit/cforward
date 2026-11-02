@@ -134,6 +134,8 @@ class MainActivity : Activity() {
     }
 
     private fun pollLog() {
+        // don't disturb an in-progress text selection/copy
+        if (logText.hasSelection()) return
         val log = File(filesDir, "cforward.log")
         if (!log.exists()) return
         val lines = log.readLines()
