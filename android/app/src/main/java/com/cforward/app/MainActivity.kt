@@ -118,17 +118,21 @@ class MainActivity : Activity() {
     }
 
     private fun pollStatus() {
-        val text = try {
-            val conn = URL("http://127.0.0.1:18080/status").openConnection() as HttpURLConnection
-            conn.connectTimeout = 2000
-            conn.readTimeout = 2000
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
-            formatStatus(JSONObject(body))
-        } catch (e: Exception) {
-            "⏸ relay not running (admin endpoint unreachable)"
-        }
-        statusText.text = text
+        // Network on the UI thread is forbidden on Android (NetworkOnMainThreadException),
+        // so fetch on a background thread and marshal the result back.
+        Thread {
+            val text = try {
+                val conn = URL("http://127.0.0.1:18080/status").openConnection() as HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                formatStatus(JSONObject(body))
+            } catch (e: Exception) {
+                "⏸ relay not running (admin endpoint unreachable)"
+            }
+            runOnUiThread { statusText.text = text }
+        }.start()
     }
 
     private fun formatStatus(j: JSONObject): String {
