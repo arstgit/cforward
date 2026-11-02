@@ -5,8 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import java.io.File
+import java.io.IOException
 
 /**
  * Foreground service that runs the cforward Go binary as a child process and
@@ -14,6 +18,10 @@ import java.io.File
  * private files dir (assets are extracted once on first start).
  */
 class ForwardService : Service() {
+
+    companion object {
+        private const val TAG = "cforward"
+    }
 
     private var process: Process? = null
     private var stopping = false
@@ -30,10 +38,26 @@ class ForwardService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         stopping = false
-        startForeground(1, buildNotification())
-        extractAssets()
-        writeConfig()
-        startProcess()
+        try {
+            // Android 14+ (API 34) REQUIRES startForeground with a foreground
+            // service type matching the manifest, otherwise the app crashes with
+            // MissingForegroundServiceTypeException.
+            when {
+                Build.VERSION.SDK_INT >= 34 ->
+                    startForeground(1, buildNotification(),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                Build.VERSION.SDK_INT >= 29 ->
+                    startForeground(1, buildNotification(), 0)
+                else ->
+                    startForeground(1, buildNotification())
+            }
+            extractAssets()
+            writeConfig()
+            startProcess()
+        } catch (e: Exception) {
+            Log.e(TAG, "start failed", e)
+            writeLog("start failed: ${e}")
+        }
         return START_STICKY
     }
 
@@ -96,8 +120,22 @@ class ForwardService : Service() {
         val pb = ProcessBuilder(bin, "-config", cfg)
         pb.redirectErrorStream(true)
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(log))
-        process = pb.start()
+        try {
+            process = pb.start()
+        } catch (e: IOException) {
+            // e.g. SELinux refused to exec the binary from the app data dir
+            Log.e(TAG, "exec failed", e)
+            writeLog("exec failed: ${e}")
+            return
+        }
         monitor()
+    }
+
+    private fun writeLog(msg: String) {
+        try {
+            File(filesDir, "cforward.log").appendText(msg + "\n")
+        } catch (_: Exception) {
+        }
     }
 
     /** Waits for the process; restarts it (with a short backoff) unless we are stopping. */
