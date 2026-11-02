@@ -27,20 +27,31 @@ mkdir -p "$ROOT/android/app/src/main/assets/bin" "$ROOT/android/app/src/main/ass
     -ldflags "-s -w -X main.version=$(date +%Y%m%d)-android" \
     -o android/app/src/main/assets/bin/cforward .)
 
-# 2) fetch cfst + ip.txt from the upstream release when missing
-if [ ! -f app/src/main/assets/cfst/cfst ] || [ ! -f app/src/main/assets/cfst/ip.txt ]; then
-    echo "== fetching cfst_linux_arm64 from GitHub releases"
-    [ -f /tmp/cfst_arm64.tar.gz ] || curl -sL -o /tmp/cfst_arm64.tar.gz \
-        https://github.com/XIU2/CloudflareSpeedTest/releases/download/v2.3.5/cfst_linux_arm64.tar.gz
-    rm -rf /tmp/cfst_linux_arm64
-    tar xzf /tmp/cfst_arm64.tar.gz -C /tmp
-    cp /tmp/cfst_linux_arm64/cfst "$ROOT/android/app/src/main/assets/cfst/"
-    cp /tmp/cfst_linux_arm64/ip.txt "$ROOT/android/app/src/main/assets/cfst/"
-    # GPL-3.0 license text for the bundled third-party binary (kept in git)
-    [ -f "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" ] || \
-        curl -sL -o "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" \
-        "https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/LICENSE"
+# 2) build cfst from source as a PIE binary. The official releases are static
+# non-PIE ELFs that Android's linker64 cannot load on hardened ROMs (SELinux
+# forbids execve of app-data files); a Go android/arm64 build is PIE and works
+# via the same linker64 loading as the cforward core.
+CFST_SRC=/tmp/cfst-src
+if ! file app/src/main/assets/cfst/cfst 2>/dev/null | grep -q "pie executable"; then
+    echo "== building cfst (android/arm64 PIE) from source"
+    if [ ! -f "$CFST_SRC/go.mod" ]; then
+        rm -rf "$CFST_SRC" /tmp/cfst-src.tgz
+        echo "== fetching cfst source (v2.3.5)"
+        (curl -sL -o /tmp/cfst-src.tgz \
+            "https://ghproxy.net/https://github.com/XIU2/CloudflareSpeedTest/archive/refs/tags/v2.3.5.tar.gz" ||
+         curl -sL -o /tmp/cfst-src.tgz \
+            "https://github.com/XIU2/CloudflareSpeedTest/archive/refs/tags/v2.3.5.tar.gz") || exit 1
+        mkdir -p "$CFST_SRC"
+        tar xzf /tmp/cfst-src.tgz -C "$CFST_SRC" --strip-components=1
+    fi
+    (cd "$CFST_SRC" && CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build \
+        -ldflags "-s -w" -o "$ROOT/android/app/src/main/assets/cfst/cfst" .) || exit 1
+    cp "$CFST_SRC/ip.txt" "$ROOT/android/app/src/main/assets/cfst/ip.txt"
 fi
+# GPL-3.0 license text for the bundled third-party binary (kept in git)
+[ -f "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" ] || \
+    curl -sL -o "$ROOT/android/app/src/main/assets/cfst/LICENSE.txt" \
+    "https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/LICENSE"
 
 # 3) ensure the Android SDK is installed
 if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then

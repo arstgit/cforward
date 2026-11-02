@@ -64,7 +64,8 @@ type Config struct {
 	StallTimeout   Duration `json:"stall_timeout"`    // upstream silent for this long while the client spoke → cut
 	StallWindow    Duration `json:"stall_window"`     // only check stalls while a segment is younger than this
 	StatusInterval Duration `json:"status_interval"`
-	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
+	CfstEnabled    bool     `json:"cfst_enabled"` // run the cfst binary; false = seed pool from ip.txt instead
+	AdminAddr      string   `json:"admin_addr"`   // HTTP admin endpoint (JSON status); empty disables
 	Debug          bool     `json:"debug"`
 }
 
