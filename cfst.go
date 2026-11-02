@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // CfstOpts holds tunable cfst subprocess parameters.
 // (-tlr 0 packet-loss filtering and -o "" stdout output are semantic requirements and stay fixed.)
 type CfstOpts struct {
@@ -110,8 +117,8 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstR
 	cmd.Dir = cfstDir
 
 	start := time.Now()
-	out, err := cmd.Output()
-	slog.Debug("cfst exited", "err", err, "duration", time.Since(start), "stdout_bytes", len(out))
+	out, err := cmd.CombinedOutput() // capture stderr too: linker64/loader errors land there
+	slog.Debug("cfst exited", "err", err, "duration", time.Since(start), "output_bytes", len(out))
 
 	if err != nil {
 		if ctx.Err() != nil {
@@ -126,8 +133,8 @@ func RunCfst(ctx context.Context, cfstDir, cfstPath string, o CfstOpts) ([]CfstR
 		}
 		results, perr := ParseCfstOutput(out)
 		if perr != nil {
-			return nil, fmt.Errorf("cfst run failed (exit %d): %v; output parse: %v",
-				exitErr.ExitCode(), err, perr)
+			return nil, fmt.Errorf("cfst run failed (exit %d): %v; output: %s; parse: %v",
+				exitErr.ExitCode(), err, truncate(string(out), 500), perr)
 		}
 		return results, nil
 	}
