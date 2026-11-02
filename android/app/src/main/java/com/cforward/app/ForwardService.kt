@@ -85,10 +85,18 @@ class ForwardService : Service() {
             "cfst/ip.txt" to File(File(filesDir, "cfst"), "ip.txt"),
         )
         for ((asset, out) in pairs) {
-            if (out.exists() && out.length() > 0) continue
-            out.parentFile?.mkdirs()
-            assets.open(asset).use { input -> out.outputStream().use { input.copyTo(it) } }
-            out.setExecutable(true, false)
+            try {
+                if (!out.exists() || out.length() == 0L) {
+                    out.parentFile?.mkdirs()
+                    assets.open(asset).use { input -> out.outputStream().use { input.copyTo(it) } }
+                }
+                // always force the executable bit (owner + group + other)
+                out.setExecutable(true, true)
+                out.setReadable(true, false)
+            } catch (e: Exception) {
+                Log.e(TAG, "extract $asset failed", e)
+                writeLog("extract $asset failed: $e")
+            }
         }
     }
 
@@ -125,10 +133,33 @@ class ForwardService : Service() {
         } catch (e: IOException) {
             // e.g. SELinux refused to exec the binary from the app data dir
             Log.e(TAG, "exec failed", e)
-            writeLog("exec failed: ${e}")
+            val diag = StringBuilder("exec failed: ${e}\n")
+            diag.append("canExecute=").append(File(bin).canExecute())
+            diag.append(" perms=").append(permsOf(File(bin)))
+            diag.append("\n").append(lsLZ(File(bin)))
+            writeLog(diag.toString())
             return
         }
         monitor()
+    }
+
+    private fun permsOf(f: File): String {
+        return try {
+            java.nio.file.Files.getPosixFilePermissions(f.toPath()).toString()
+        } catch (e: Exception) {
+            "n/a (${e})"
+        }
+    }
+
+    private fun lsLZ(f: File): String {
+        return try {
+            val p = Runtime.getRuntime().exec(
+                arrayOf("/system/bin/ls", "-lZ", f.absolutePath)
+            )
+            p.inputStream.bufferedReader().readText().trim()
+        } catch (e: Exception) {
+            "ls -lZ failed: ${e}"
+        }
     }
 
     private fun writeLog(msg: String) {
