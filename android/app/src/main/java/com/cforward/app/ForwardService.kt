@@ -113,6 +113,7 @@ class ForwardService : Service() {
           "pool_max": 200,
           "cfst_dir": "${File(filesDir, "cfst").absolutePath}",
           "cfst_dd": ${prefs.getBoolean("cfst_dd", true)},
+          "debug": ${prefs.getBoolean("debug", false)},
           "dead_skip": "60s",
           "admin_addr": "127.0.0.1:18080"
         }

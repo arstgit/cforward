@@ -34,6 +34,8 @@ class MainActivity : Activity() {
     private val targetInput by lazy { findViewById<EditText>(R.id.input_target) }
     private val poolMinInput by lazy { findViewById<EditText>(R.id.input_pool_min) }
     private val ddCheck by lazy { findViewById<CheckBox>(R.id.check_dd) }
+    private val debugCheck by lazy { findViewById<CheckBox>(R.id.check_debug) }
+    private val shareBtn by lazy { findViewById<Button>(R.id.btn_share_log) }
 
     private val poller = object : Runnable {
         override fun run() {
@@ -52,6 +54,7 @@ class MainActivity : Activity() {
         targetInput.setText(prefs.getInt("target_port", 443).toString())
         poolMinInput.setText(prefs.getInt("pool_min", 100).toString())
         ddCheck.isChecked = prefs.getBoolean("cfst_dd", true)
+        debugCheck.isChecked = prefs.getBoolean("debug", false)
 
         btnStart.setOnClickListener {
             saveSettings()
@@ -68,6 +71,7 @@ class MainActivity : Activity() {
             startForegroundService(Intent(this, ForwardService::class.java))
             Toast.makeText(this, "settings applied, relay restarted", Toast.LENGTH_SHORT).show()
         }
+        shareBtn.setOnClickListener { shareLog() }
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -92,7 +96,25 @@ class MainActivity : Activity() {
             .putInt("target_port", targetInput.text.toString().toIntOrNull() ?: 443)
             .putInt("pool_min", poolMinInput.text.toString().toIntOrNull() ?: 100)
             .putBoolean("cfst_dd", ddCheck.isChecked)
+            .putBoolean("debug", debugCheck.isChecked)
             .apply()
+    }
+
+    /** Shares the relay log as plain text (no FileProvider needed). */
+    private fun shareLog() {
+        val log = File(filesDir, "cforward.log")
+        val body = if (log.exists()) {
+            val lines = log.readLines()
+            if (lines.size > 300) lines.takeLast(300).joinToString("\n") else lines.joinToString("\n")
+        } else {
+            "no log yet"
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "cforward log")
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        startActivity(Intent.createChooser(send, "Share cforward log"))
     }
 
     private fun pollStatus() {

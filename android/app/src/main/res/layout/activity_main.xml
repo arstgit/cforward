@@ -102,13 +102,33 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="cfst no download test (saves data)" />
+
+            <CheckBox
+                android:id="@+id/check_debug"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="debug log" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btn_apply"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Apply" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_apply"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Apply" />
+
+            <Button
+                android:id="@+id/btn_share_log"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Share log" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"
