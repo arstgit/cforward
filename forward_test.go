@@ -1072,3 +1072,77 @@ func TestUpstreamStallKilled(t *testing.T) {
 	}
 	t.Logf("stall-kill OK: cum_fail=%d", e.CumFail)
 }
+
+// ---- Verified (good) IPs are precious ----
+
+// verified IP 享受 4x 失败预算；普通试用 IP 照旧 5 次淘汰。
+func TestVerifiedShieldedFromEviction(t *testing.T) {
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "9.9.9.1", Latency: 10, Speed: 10}, // 将成为 verified
+		{IP: "9.9.9.2", Latency: 10, Speed: 10}, // 普通试用
+	})
+	pool.ReportConn("9.9.9.1", true, 100000, time.Second, 0) // 真流量 → verified
+
+	// 10 次失败：试用 IP 早该没了，verified 还活着（预算 20）
+	for i := 0; i < 10; i++ {
+		pool.ReportConn("9.9.9.1", false, 0, time.Second, 0)
+		pool.ReportConn("9.9.9.2", false, 0, time.Second, 0)
+	}
+	a, okA := poolTop(pool, "9.9.9.1")
+	if !okA || !a.Verified {
+		t.Fatalf("verified IP must survive 10 failures: present=%v %+v", okA, a)
+	}
+	if _, okB := poolTop(pool, "9.9.9.2"); okB {
+		t.Fatalf("trial IP must be evicted at 5 failures")
+	}
+	t.Logf("verified shield OK: verified cum_fail=%d still present", a.CumFail)
+}
+
+// 跑出真流量会清零累计失败（成功的证据压倒失败）。
+func TestSuccessResetsFailures(t *testing.T) {
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{{IP: "9.9.9.3", Latency: 10, Speed: 10}})
+
+	for i := 0; i < 4; i++ { // 4 次失败，还差 1 次淘汰
+		pool.ReportConn("9.9.9.3", false, 0, time.Second, 0)
+	}
+	pool.ReportConn("9.9.9.3", true, 100000, time.Second, 0) // 真流量
+
+	e, _ := poolTop(pool, "9.9.9.3")
+	if e == nil || e.CumFail != 0 || !e.Verified {
+		t.Fatalf("success must reset failures and verify: %+v", e)
+	}
+	// 清零后再失败 5 次（未超 verified 预算 20）
+	for i := 0; i < 5; i++ {
+		pool.ReportConn("9.9.9.3", false, 0, time.Second, 0)
+	}
+	if _, ok := poolTop(pool, "9.9.9.3"); !ok {
+		t.Fatalf("verified IP must still survive after 5 post-reset failures")
+	}
+	t.Logf("reset-on-success OK")
+}
+
+// 池满清理时，优先淘汰未验证的 IP——即使 verified 的分数被打折后更低。
+func TestOverflowEvictsUnverifiedFirst(t *testing.T) {
+	pool := NewPool(t.TempDir()+"/pool.json", 2, 5)
+	pool.AddCfstResults([]CfstResult{
+		{IP: "9.9.9.4", Latency: 10, Speed: 50}, // 将 verified 但分数被打折
+		{IP: "9.9.9.5", Latency: 10, Speed: 50},
+	})
+	pool.mu.Lock()
+	pool.entries["9.9.9.4"].Verified = true
+	pool.entries["9.9.9.4"].ConsecFail = 3 // 惩罚 ×0.1 → 分数远低于未验证的
+	pool.mu.Unlock()
+
+	// 加入第 3 个 → 溢出 1 个，被淘汰的必须是未验证的
+	pool.AddCfstResults([]CfstResult{{IP: "9.9.9.6", Latency: 5, Speed: 50}})
+
+	if _, ok := poolTop(pool, "9.9.9.4"); !ok {
+		t.Fatalf("verified IP must survive overflow eviction")
+	}
+	if pool.Size() != 2 {
+		t.Fatalf("pool must stay at cap: %d", pool.Size())
+	}
+	t.Logf("overflow shield OK: verified kept, size=%d", pool.Size())
+}

@@ -318,17 +318,26 @@ func (p *Pool) AddCfstResults(results []CfstResult) (added, refreshed int) {
 
 func (p *Pool) evictLowestLocked(n int) {
 	type kv struct {
-		ip    string
-		score float64
+		ip       string
+		score    float64
+		verified bool
 	}
 	list := make([]kv, 0, len(p.entries))
 	for ip, e := range p.entries {
-		list = append(list, kv{ip, e.Score()})
+		list = append(list, kv{ip, e.Score(), e.Verified})
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].score < list[j].score })
+	// Unverified trials go first; they are plentiful and replaceable. Verified
+	// IPs are precious and only evicted when nothing else is left.
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].verified != list[j].verified {
+			return !list[i].verified
+		}
+		return list[i].score < list[j].score
+	})
 	for _, k := range list[:n] {
 		delete(p.entries, k.ip)
-		slog.Info("evicted (pool overflow)", "ip", k.ip, "score", k.score)
+		slog.Info("evicted (pool overflow)", "ip", k.ip, "score", k.score,
+			"verified", k.verified)
 	}
 }
 
@@ -399,7 +408,7 @@ func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 		e.CumFail++
 		e.UpdatedAt = time.Now()
 		penalized := e.ConsecFail == consecFailPenalty
-		evict := e.CumFail >= p.failEvict
+		evict := e.CumFail >= p.evictBudget(e)
 		p.mu.Unlock()
 		if penalized {
 			slog.Warn("ip penalized", "ip", ip, "consec_fail", e.ConsecFail, "score", e.Score())
@@ -438,7 +447,11 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 	} else {
 		e.Successes++
 		e.ConsecFail = 0
+		e.CumFail = 0 // real traffic is evidence against accumulated failures
 		e.LastActive = time.Now()
+		if !e.Verified {
+			slog.Info("ip verified", "ip", ip, "score", e.Score())
+		}
 		e.Verified = true // carried real traffic: locked in as a good IP
 	}
 	if ok && duration > 0 && bytes > 0 {
@@ -450,7 +463,7 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 		}
 	}
 	e.UpdatedAt = time.Now()
-	evict := e.CumFail >= p.failEvict
+	evict := e.CumFail >= p.evictBudget(e)
 	p.mu.Unlock()
 	if evict {
 		p.Evict(ip, "cumulative failures")
@@ -537,6 +550,17 @@ func (p *Pool) MarkDead(ip string, deadSkip time.Duration) {
 	p.mu.Unlock()
 	p.markDirty()
 	p.notify()
+}
+
+// evictBudget returns how many cumulative failures an entry tolerates before
+// eviction. Verified IPs (proven by real traffic) are precious: they get 4x the
+// budget of unproven trials, so client storms and transient stalls cannot kill
+// the few IPs that actually work.
+func (p *Pool) evictBudget(e *IPEntry) int {
+	if e.Verified {
+		return p.failEvict * 4
+	}
+	return p.failEvict
 }
 
 // Evict removes an IP from the pool and logs the event.

@@ -363,6 +363,8 @@ func writeStatusJSON(w http.ResponseWriter, cfg *Config, pool *Pool, sched *Sche
 			"samples":     e.Samples,
 			"attempts":    e.Attempts,
 			"successes":   e.Successes,
+			"verified":    e.Verified,
+			"cum_fail":    e.CumFail,
 			"dead_until":  e.DeadUntil.Format(time.RFC3339),
 			"last_active": e.LastActive.Format(time.RFC3339),
 		})

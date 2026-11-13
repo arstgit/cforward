@@ -142,6 +142,9 @@ work are discovered only by real traffic, so good IPs are precious:
 
 - **Verified pool**: IPs that have served real traffic (`Verified` is permanent, no
   time window) — every connection goes here first, load-balanced among themselves.
+  Verified IPs are shielded: serving real traffic resets their failure counters, they
+  tolerate 4x the failure budget of trials, and pool-overflow eviction always drops
+  unverified trials first.
 - **Trial pool**: everything else, used only when no verified IP works; a trial IP
   that serves real traffic is promoted and locked in. Trial IPs respect
   `-max-per-ip` so one bad IP cannot absorb the whole pool.
