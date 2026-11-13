@@ -1,148 +1,273 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="16dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="cforward — Cloudflare preferred-IP relay"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/status_text"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:fontFamily="monospace"
-            android:textSize="12sp"
-            android:text="⏸ relay not running" />
-
+        <!-- Header -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-            <Button
-                android:id="@+id/btn_start"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Start" />
+                android:orientation="vertical">
 
-            <Button
-                android:id="@+id/btn_stop"
-                android:layout_width="0dp"
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="cforward"
+                    android:textSize="24sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Cloudflare preferred-IP relay"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_dim" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/pill_state"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Stop" />
+                android:background="@drawable/pill"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:text="STOPPED"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF" />
         </LinearLayout>
 
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- Primary action -->
+        <Button
+            android:id="@+id/btn_toggle"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/btn_round"
+            android:text="Start relay"
+            android:textAllCaps="false"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+
+        <!-- Status card -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="Settings (apply restarts the relay)"
-            android:textStyle="bold" />
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView style="@style/StatLabel" android:text="Pool" />
+                <TextView android:id="@+id/stat_pool" style="@style/StatValue" android:text="—" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView style="@style/StatLabel" android:text="Verified IPs" />
+                <TextView android:id="@+id/stat_verified" style="@style/StatValue" android:text="—" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView style="@style/StatLabel" android:text="Active connections" />
+                <TextView android:id="@+id/stat_conns" style="@style/StatValue" android:text="—" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView style="@style/StatLabel" android:text="CFST" />
+                <TextView android:id="@+id/stat_cfst" style="@style/StatValue" android:text="—" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Top IPs -->
+        <TextView style="@style/SectionLabel" android:text="TOP IPs" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:background="@drawable/card"
+            android:orientation="vertical"
+            android:padding="12dp">
 
             <TextView
-                android:layout_width="wrap_content"
+                android:id="@+id/top_text"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="listen port" />
-
-            <EditText
-                android:id="@+id/input_port"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:inputType="number" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="  target port" />
-
-            <EditText
-                android:id="@+id/input_target"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:inputType="number" />
+                android:fontFamily="monospace"
+                android:textSize="12sp"
+                android:textColor="@color/text"
+                android:lineSpacingExtra="4dp"
+                android:text="—" />
         </LinearLayout>
+
+        <!-- Settings -->
+        <TextView style="@style/SectionLabel" android:text="SETTINGS" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:background="@drawable/card"
+            android:orientation="vertical"
+            android:padding="16dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="pool min" />
+                android:orientation="horizontal">
 
-            <EditText
-                android:id="@+id/input_pool_min"
-                android:layout_width="80dp"
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginRight="10dp">
+
+                    <TextView style="@style/FieldLabel" android:text="Listen port" />
+
+                    <EditText
+                        android:id="@+id/input_port"
+                        style="@style/FieldInput"
+                        android:inputType="number" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/FieldLabel" android:text="Target port" />
+
+                    <EditText
+                        android:id="@+id/input_target"
+                        style="@style/FieldInput"
+                        android:inputType="number" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="number" />
+                android:orientation="vertical"
+                android:layout_marginTop="14dp">
+
+                <TextView style="@style/FieldLabel" android:text="Pool minimum" />
+
+                <EditText
+                    android:id="@+id/input_pool_min"
+                    style="@style/FieldInput"
+                    android:inputType="number" />
+            </LinearLayout>
 
             <CheckBox
                 android:id="@+id/check_dd"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="cfst no download test (saves data)" />
+                android:layout_marginTop="12dp"
+                android:text="Skip cfst download test (saves data)"
+                android:textSize="14sp"
+                android:textColor="@color/text" />
 
             <CheckBox
                 android:id="@+id/check_debug"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Debug logging"
+                android:textSize="14sp"
+                android:textColor="@color/text" />
+
+            <Button
+                android:id="@+id/btn_apply"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/btn_round"
+                android:text="Apply settings"
+                android:textAllCaps="false"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- Log -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="LOG"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_dim"
+                android:letterSpacing="0.08" />
+
+            <TextView
+                android:id="@+id/btn_share"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="debug log" />
+                android:text="Share log"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/accent"
+                android:padding="4dp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:background="@drawable/card"
+            android:orientation="vertical"
+            android:padding="12dp">
 
-            <Button
-                android:id="@+id/btn_apply"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Apply" />
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="240dp">
 
-            <Button
-                android:id="@+id/btn_share_log"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Share log" />
+                <TextView
+                    android:id="@+id/log_text"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textSize="10sp"
+                    android:textColor="@color/text_dim"
+                    android:textIsSelectable="true"
+                    android:text="—" />
+            </ScrollView>
         </LinearLayout>
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="Log (tail)"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/log_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:textSize="10sp"
-            android:textIsSelectable="true" />
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="8dp"
+            android:text="Tip: disable battery optimization for this app so the relay keeps running in the background."
+            android:textSize="11sp"
+            android:textColor="@color/text_dim" />
     </LinearLayout>
 </ScrollView>

@@ -9,7 +9,7 @@
     <application
         android:label="cforward"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@android:style/Theme.Material.Light.DarkActionBar"
+        android:theme="@style/AppTheme"
         android:allowBackup="false">
 
         <activity
