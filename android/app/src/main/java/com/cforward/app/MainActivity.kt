@@ -6,7 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -43,6 +46,9 @@ class MainActivity : Activity() {
     private val btnApply by lazy { findViewById<Button>(R.id.btn_apply) }
     private val btnShare by lazy { findViewById<TextView>(R.id.btn_share) }
     private val logText by lazy { findViewById<TextView>(R.id.log_text) }
+    private val statListen by lazy { findViewById<TextView>(R.id.stat_listen) }
+    private val bootCheck by lazy { findViewById<CheckBox>(R.id.check_boot) }
+    private val btnBattery by lazy { findViewById<Button>(R.id.btn_battery) }
 
     private var running = false
 
@@ -64,6 +70,7 @@ class MainActivity : Activity() {
         poolMinInput.setText(prefs.getInt("pool_min", 100).toString())
         ddCheck.isChecked = prefs.getBoolean("cfst_dd", true)
         debugCheck.isChecked = prefs.getBoolean("debug", false)
+        bootCheck.isChecked = prefs.getBoolean("start_on_boot", false)
 
         btnToggle.setOnClickListener {
             if (running) {
@@ -88,6 +95,7 @@ class MainActivity : Activity() {
         }
 
         btnShare.setOnClickListener { shareLog() }
+        btnBattery.setOnClickListener { requestBatteryExemption() }
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -115,6 +123,7 @@ class MainActivity : Activity() {
             .putInt("pool_min", poolMinInput.text.toString().toIntOrNull() ?: 100)
             .putBoolean("cfst_dd", ddCheck.isChecked)
             .putBoolean("debug", debugCheck.isChecked)
+            .putBoolean("start_on_boot", bootCheck.isChecked)
             .apply()
     }
 
@@ -137,6 +146,8 @@ class MainActivity : Activity() {
             statVerified.setTextColor(getColor(R.color.text))
             statConns.text = "—"
             statCfst.text = "—"
+            statListen.text = "127.0.0.1:" + getSharedPreferences("cforward", MODE_PRIVATE)
+                .getInt("listen_port", 1234)
             topText.text = "—"
         }
         btnToggle.isEnabled = true
@@ -154,6 +165,7 @@ class MainActivity : Activity() {
         statVerified.setTextColor(getColor(if (verified > 0) R.color.ok else R.color.text))
         statConns.text = j.getInt("active_conns").toString()
         statCfst.text = if (cfst.getBoolean("running")) "running" else "idle"
+        statListen.text = j.optString("listen", "—")
 
         val top = pool.getJSONArray("top")
         val sb = StringBuilder()
@@ -203,6 +215,27 @@ class MainActivity : Activity() {
         if (lines.isEmpty()) return
         val tail = lines.takeLast(40).joinToString("\n")
         if (tail != logText.text.toString()) logText.text = tail
+    }
+
+    /** Asks the system to exempt this app from battery optimization (background survival). */
+    private fun requestBatteryExemption() {
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm != null && pm.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(this, "Already battery-optimization exempt", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Open system settings → Battery manually", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     /** Shares the relay log as plain text. */
