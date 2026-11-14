@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1145,4 +1146,52 @@ func TestOverflowEvictsUnverifiedFirst(t *testing.T) {
 		t.Fatalf("pool must stay at cap: %d", pool.Size())
 	}
 	t.Logf("overflow shield OK: verified kept, size=%d", pool.Size())
+}
+
+// 回归：Save() 与并发更新不得有数据竞争（-race 检出）。
+func TestSaveConcurrentWithUpdates(t *testing.T) {
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	var results []CfstResult
+	for i := 0; i < 50; i++ {
+		results = append(results, CfstResult{IP: fmt.Sprintf("10.0.0.%d", i), Latency: 50, Speed: 10})
+	}
+	pool.AddCfstResults(results)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				pool.ReportConn("10.0.0.1", true, 100, time.Millisecond, 0)
+				pool.ReportDial("10.0.0.2", false, 0)
+				pool.Save()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// 回归：第一次拉黑过期后，再次连续失败必须能重新拉黑（旧代码一生只拉黑一次）。
+func TestDeadSkipRepeated(t *testing.T) {
+	pool := NewPool(t.TempDir()+"/pool.json", 200, 5)
+	pool.AddCfstResults([]CfstResult{{IP: "10.9.9.9", Latency: 50, Speed: 10}})
+
+	// 两次失败 → 第一次拉黑
+	pool.ReportConn("10.9.9.9", false, 0, time.Second, 0)
+	pool.ReportConn("10.9.9.9", false, 0, time.Second, 0)
+	if !pool.MaybeMarkDead("10.9.9.9", 50*time.Millisecond, 2) {
+		t.Fatal("first dead-skip should fire")
+	}
+	// 拉黑期内重复调用不重复标记
+	if pool.MaybeMarkDead("10.9.9.9", 50*time.Millisecond, 2) {
+		t.Fatal("must not re-mark while already dead")
+	}
+	time.Sleep(60 * time.Millisecond) // 等待过期
+
+	// 再次失败 → 必须能第二次拉黑
+	pool.ReportConn("10.9.9.9", false, 0, time.Second, 0)
+	if !pool.MaybeMarkDead("10.9.9.9", time.Minute, 2) {
+		t.Fatal("dead-skip must be re-armable after expiry")
+	}
 }

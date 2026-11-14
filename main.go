@@ -64,8 +64,7 @@ type Config struct {
 	StallTimeout   Duration `json:"stall_timeout"`    // upstream silent for this long while the client spoke → cut
 	StallWindow    Duration `json:"stall_window"`     // only check stalls while a segment is younger than this
 	StatusInterval Duration `json:"status_interval"`
-	CfstEnabled    bool     `json:"cfst_enabled"` // run the cfst binary; false = seed pool from ip.txt instead
-	AdminAddr      string   `json:"admin_addr"`   // HTTP admin endpoint (JSON status); empty disables
+	AdminAddr      string   `json:"admin_addr"` // HTTP admin endpoint (JSON status); empty disables
 	Debug          bool     `json:"debug"`
 }
 
@@ -126,6 +125,9 @@ func findArg(args []string, name string) string {
 		}
 		if strings.HasPrefix(a, "-"+name+"=") {
 			return strings.TrimPrefix(a, "-"+name+"=")
+		}
+		if strings.HasPrefix(a, "--"+name+"=") {
+			return strings.TrimPrefix(a, "--"+name+"=")
 		}
 	}
 	return ""
@@ -264,7 +266,11 @@ func main() {
 		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 			writeStatusJSON(w, &cfg, pool, sched, startedAt)
 		})
-		admin := &http.Server{Addr: cfg.AdminAddr, Handler: mux}
+		admin := &http.Server{
+			Addr:              cfg.AdminAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
 		go func() {
 			slog.Info("admin endpoint listening", "addr", cfg.AdminAddr)
 			if err := admin.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -285,12 +291,12 @@ func printStatus(cfg *Config, pool *Pool, sched *Scheduler) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "── cforward status ──────────────────────────────\n")
 	cfstState := "idle"
-	if running, _, lastDur, lastErr := sched.Status(); running {
+	if running, lastRun, _, lastErr := sched.Status(); running {
 		cfstState = "running"
 	} else if lastErr != nil {
 		cfstState = "last round failed"
-	} else if lastDur > 0 {
-		cfstState = "last round " + lastDur.Round(time.Second).String() + " ago"
+	} else if !lastRun.IsZero() {
+		cfstState = "idle (last round " + time.Since(lastRun).Round(time.Second).String() + " ago)"
 	}
 	fmt.Fprintf(&b, "  pool: %d IPs (min %d / max %d)    active conns: %d    dead-skipped: %d    cfst: %s\n",
 		pool.Size(), cfg.PoolMin, cfg.PoolMax, activeConns.Load(),

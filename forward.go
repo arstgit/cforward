@@ -343,8 +343,8 @@ func (f *Forwarder) handle(client net.Conn) {
 			// Neutral: the client broke the connection, or connected but never sent a
 			// byte. Neither rewards nor penalizes the IP.
 		default:
-			// Fail: up_err, no_data or no_response — the upstream never served usable
-			// data. Drives ConsecFail/CumFail. Dead-skip only after -dead-after
+			// Fail: up_err, stall, no_data or no_response — the upstream never served
+			// usable data. Drives ConsecFail/CumFail. Dead-skip only after -dead-after
 			// consecutive failures (stability-first: one bad segment on a flaky
 			// long-distance path must not burn the IP).
 			f.pool.ReportConn(used.IP, false, total, res.dur, retries)
@@ -383,19 +383,22 @@ func (f *Forwarder) handle(client net.Conn) {
 
 // classify judges a finished segment. Only ACTIVE traffic is the gold standard:
 // the upstream sent data back with a real time span (ongoing, changing flow) or in
-// real volume. Everything else that is not a client-side fault is a failure.
+// real volume.
+//
+// Verdicts:
+//   - active:       real traffic flowed → success
+//   - up_err:       upstream-side transport error → failure + in-loop switch (re-dial now)
+//   - stall:        upstream stopped answering while the client waited → failure
+//   - no_data:      accepted TCP, nothing came back, ended quickly → failure
+//   - no_response:  one-way only, upstream never sent a byte → failure
+//   - tiny:         only a small exchange (a lone 200 / TLS handshake) → NEUTRAL
+//   - idle:         client connected but never sent a byte → NEUTRAL
+//   - client_err:   client broke the connection → NEUTRAL
+//
+// Only failures (up_err/stall/no_data/no_response) drive ConsecFail/CumFail.
 // Stability-first: a single failed segment never marks an IP dead by itself —
 // dead-skipping requires -dead-after consecutive failures (decided by the caller),
 // so transient stalls on a flaky long-distance path do not churn the pool.
-//
-// Verdicts:
-//   - active:       real traffic flowed (u2c>0 and flowSpan/volume thresholds met) → success
-//   - up_err:       upstream-side transport error → failure + in-loop switch (re-dial now)
-//   - no_data:      accepted TCP, nothing came back, ended quickly → failure
-//   - idle:         client connected but never sent a byte → NEUTRAL (client's choice)
-//   - no_response:  one-way only, upstream never sent a byte → failure
-//   - tiny:         only a small exchange (a lone 200 / TLS handshake only) → failure
-//   - client_err:   client broke the connection → neutral (not the IP's fault)
 func (f *Forwarder) classify(res relayResult, c2u, u2c int64, flowSpan time.Duration) (verdict string, ok bool) {
 	total := c2u + u2c
 	switch {

@@ -18,6 +18,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.cforward.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
  * Single-screen control panel for the cforward relay.
@@ -209,7 +210,7 @@ class MainActivity : AppCompatActivity() {
             if (e.verified) anyVerified = true
             sb.append(
                 String.format(
-                    "%-3d %-16s %6.1f %5.0fms %5.1fM%s\n",
+                    Locale.US, "%-3d %-16s %6.1f %5.0fms %5.1fM%s\n",
                     i + 1, e.ip, e.score, e.lat, e.speed, if (e.verified) " *" else ""
                 )
             )

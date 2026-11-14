@@ -147,6 +147,7 @@ type Pool struct {
 	file      string
 	dirty     bool
 	saveTimer *time.Timer
+	saveMu    sync.Mutex // serializes Save(): concurrent saves would race on the tmp file
 
 	// Limits (injected from config)
 	max       int
@@ -207,6 +208,11 @@ func (p *Pool) markDirty() {
 
 // Save writes pool.json (debounced; also used for the shutdown flush).
 func (p *Pool) Save() {
+	// Serialize writers: the debounce timer and shutdown flush can overlap, and two
+	// concurrent saves would race on the same tmp path (rename errors / corruption).
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
+
 	p.mu.Lock()
 	if p.saveTimer != nil {
 		p.saveTimer.Stop()
@@ -216,9 +222,11 @@ func (p *Pool) Save() {
 		p.mu.Unlock()
 		return
 	}
-	list := make([]*IPEntry, 0, len(p.entries))
+	// Copy under the lock: entries mutate concurrently (ReportConn/ReportDial),
+	// so marshaling live pointers would be a data race.
+	list := make([]IPEntry, 0, len(p.entries))
 	for _, e := range p.entries {
-		list = append(list, e)
+		list = append(list, *e)
 	}
 	p.dirty = false
 	p.mu.Unlock()
@@ -384,7 +392,6 @@ func (p *Pool) Top(n int) []*IPEntry {
 	return all[:n]
 }
 
-// ReportDial records one dial result. When ok, latencyMs is the dial duration.
 // ReportDial records one dial result. Dial connectivity alone is NOT a goodness
 // signal — only segments with active traffic (ReportConn ok=true) count as
 // successes. A successful dial only feeds the latency EMA.
@@ -408,10 +415,14 @@ func (p *Pool) ReportDial(ip string, ok bool, latencyMs float64) {
 		e.CumFail++
 		e.UpdatedAt = time.Now()
 		penalized := e.ConsecFail == consecFailPenalty
+		var score float64
+		if penalized {
+			score = e.Score() // compute under the lock; the entry is still live
+		}
 		evict := e.CumFail >= p.evictBudget(e)
 		p.mu.Unlock()
 		if penalized {
-			slog.Warn("ip penalized", "ip", ip, "consec_fail", e.ConsecFail, "score", e.Score())
+			slog.Warn("ip penalized", "ip", ip, "consec_fail", consecFailPenalty, "score", score)
 		}
 		if evict {
 			p.Evict(ip, "cumulative failures")
@@ -449,10 +460,11 @@ func (p *Pool) ReportConn(ip string, ok bool, bytes int64, duration time.Duratio
 		e.ConsecFail = 0
 		e.CumFail = 0 // real traffic is evidence against accumulated failures
 		e.LastActive = time.Now()
-		if !e.Verified {
+		newlyVerified := !e.Verified
+		e.Verified = true // carried real traffic: locked in as a good IP
+		if newlyVerified {
 			slog.Info("ip verified", "ip", ip, "score", e.Score())
 		}
-		e.Verified = true // carried real traffic: locked in as a good IP
 	}
 	if ok && duration > 0 && bytes > 0 {
 		speed := float64(bytes) / duration.Seconds() / 1e6 // MB/s
@@ -525,7 +537,7 @@ func (p *Pool) ReportNeutral(ip string, retries int) {
 func (p *Pool) MaybeMarkDead(ip string, deadSkip time.Duration, deadAfter int) bool {
 	p.mu.Lock()
 	e := p.entries[ip]
-	if e == nil || e.ConsecFail < deadAfter || !e.DeadUntil.IsZero() {
+	if e == nil || e.ConsecFail < deadAfter || time.Now().Before(e.DeadUntil) {
 		p.mu.Unlock()
 		return false
 	}

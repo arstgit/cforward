@@ -24,6 +24,7 @@ const (
 type Scheduler struct {
 	pool *Pool
 	cfg  Config
+	ctx  context.Context // parent context, set by Run; cancels in-flight rounds on shutdown
 
 	mu      sync.Mutex
 	running bool
@@ -33,6 +34,10 @@ type Scheduler struct {
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
+
 	// Kick off immediately at startup (empty/insufficient pool).
 	s.wake()
 
@@ -92,7 +97,13 @@ func (s *Scheduler) Status() (running bool, lastRun time.Time, lastDur time.Dura
 // runOnce executes one cfst round and merges the results into the pool.
 func (s *Scheduler) runOnce() {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), cfstMaxDuration)
+	s.mu.Lock()
+	base := s.ctx
+	s.mu.Unlock()
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, cfstMaxDuration)
 	defer cancel()
 
 	slog.Info("cfst round starting", "dir", s.cfg.CfstDir)
