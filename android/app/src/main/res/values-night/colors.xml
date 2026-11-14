@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand palette (dark) -->
+    <color name="brand">#60A5FA</color>
+    <color name="on_brand">#0B1220</color>
+    <color name="brand_container">#1E3A8A</color>
+    <color name="on_brand_container">#DBEAFE</color>
+
+    <color name="secondary">#2DD4BF</color>
+    <color name="on_secondary">#042F2E</color>
+    <color name="secondary_container">#134E4A</color>
+    <color name="on_secondary_container">#CCFBF1</color>
+
+    <color name="surface">#161A20</color>
+    <color name="on_surface">#E5E7EB</color>
+    <color name="surface_variant">#22262E</color>
+    <color name="on_surface_variant">#9CA3AF</color>
+    <color name="outline">#2E333D</color>
+
+    <color name="background">#0F1216</color>
+    <color name="on_background">#E5E7EB</color>
+
+    <color name="error">#F87171</color>
+    <color name="on_error">#450A0A</color>
+
+    <!-- Custom semantic colors -->
+    <color name="ok">#4ADE80</color>
+    <color name="gray">#6B7280</color>
+
+    <color name="ic_launcher_background">#0F2A43</color>
+</resources>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">cforward</string>
+    <string name="app_tagline">Cloudflare 优选 IP 智能转发</string>
+
+    <string name="status_running">运行中</string>
+    <string name="status_stopped">已停止</string>
+
+    <string name="btn_start">启动转发</string>
+    <string name="btn_stop">停止转发</string>
+
+    <string name="label_pool">IP 池</string>
+    <string name="label_verified">已验证 IP</string>
+    <string name="label_conns">活跃连接</string>
+    <string name="label_cfst">CFST</string>
+    <string name="label_listen">监听</string>
+
+    <string name="section_top_ips">优选 IP 排行</string>
+    <string name="section_settings">设置</string>
+    <string name="section_log">日志</string>
+
+    <string name="field_listen_port">监听端口</string>
+    <string name="field_target_port">目标端口</string>
+    <string name="field_pool_min">池子下限</string>
+
+    <string name="switch_skip_download">跳过 cfst 下载测速（省流量）</string>
+    <string name="switch_debug">调试日志</string>
+    <string name="switch_boot">开机自启</string>
+
+    <string name="btn_apply">应用设置</string>
+    <string name="btn_battery">电池豁免</string>
+    <string name="btn_share_log">分享日志</string>
+
+    <string name="tip_battery">提示：为保持后台转发，建议对本应用关闭电池优化。</string>
+
+    <string name="value_dash">—</string>
+    <string name="pool_format">%1$d 个 IP（下限 %2$d）</string>
+    <string name="cfst_running">测速中</string>
+    <string name="cfst_idle">空闲</string>
+
+    <string name="top_empty">（池子为空，等待首轮 cfst 建池…）</string>
+    <string name="top_header">#   IP                分数     延迟   速度\n</string>
+    <string name="verified_legend">\n* 已验证（跑过真实流量）</string>
+
+    <string name="toast_starting">正在启动…</string>
+    <string name="toast_settings_applied">设置已应用，转发已重启</string>
+    <string name="toast_settings_saved">设置已保存</string>
+    <string name="toast_battery_already">已豁免电池优化</string>
+    <string name="toast_battery_manual">请手动打开 系统设置 → 电池</string>
+
+    <string name="notif_title">cforward 转发</string>
+    <string name="notif_starting">正在启动…</string>
+    <string name="notif_stopped">已停止</string>
+    <string name="notif_stats">池 %1$d · 已验证 %2$d · 连接 %3$d</string>
+
+    <string name="share_subject">cforward 日志</string>
+    <string name="share_chooser">分享 cforward 日志</string>
+    <string name="log_empty">—</string>
+</resources>

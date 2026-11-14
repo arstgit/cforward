@@ -11,7 +11,7 @@
     <application
         android:label="cforward"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/AppTheme"
+        android:theme="@style/Theme.Cforward"
         android:allowBackup="false">
 
         <activity

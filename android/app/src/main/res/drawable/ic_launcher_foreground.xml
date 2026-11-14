@@ -4,8 +4,16 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- forward/play arrow -->
+    <!-- relay glyph: origin dot → forward arrow -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M40,30 L76,54 L40,78 Z" />
+        android:pathData="M36,54 m-7,0 a7,7 0 1,1 14,0 a7,7 0 1,1 -14,0" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:pathData="M38,54 L66,54" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64,40 L86,54 L64,68 Z" />
 </vector>

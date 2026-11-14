@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">cforward</string>
+    <string name="app_tagline">Cloudflare preferred-IP relay</string>
+
+    <string name="status_running">RUNNING</string>
+    <string name="status_stopped">STOPPED</string>
+
+    <string name="btn_start">Start relay</string>
+    <string name="btn_stop">Stop relay</string>
+
+    <string name="label_pool">Pool</string>
+    <string name="label_verified">Verified IPs</string>
+    <string name="label_conns">Active connections</string>
+    <string name="label_cfst">CFST</string>
+    <string name="label_listen">Listen</string>
+
+    <string name="section_top_ips">TOP IPs</string>
+    <string name="section_settings">SETTINGS</string>
+    <string name="section_log">LOG</string>
+
+    <string name="field_listen_port">Listen port</string>
+    <string name="field_target_port">Target port</string>
+    <string name="field_pool_min">Pool minimum</string>
+
+    <string name="switch_skip_download">Skip cfst download test (saves data)</string>
+    <string name="switch_debug">Debug logging</string>
+    <string name="switch_boot">Start on boot</string>
+
+    <string name="btn_apply">Apply settings</string>
+    <string name="btn_battery">Battery exempt</string>
+    <string name="btn_share_log">Share log</string>
+
+    <string name="tip_battery">Tip: disable battery optimization for this app so the relay keeps running in the background.</string>
+
+    <string name="value_dash">—</string>
+    <string name="pool_format">%1$d IPs (min %2$d)</string>
+    <string name="cfst_running">running</string>
+    <string name="cfst_idle">idle</string>
+
+    <string name="top_empty">(pool empty, waiting for the first cfst round…)</string>
+    <string name="top_header">#   IP                score    lat   speed\n</string>
+    <string name="verified_legend">\n* verified (served real traffic)</string>
+
+    <string name="toast_starting">Starting…</string>
+    <string name="toast_settings_applied">Settings applied, relay restarted</string>
+    <string name="toast_settings_saved">Settings saved</string>
+    <string name="toast_battery_already">Already battery-optimization exempt</string>
+    <string name="toast_battery_manual">Open system settings → Battery manually</string>
+
+    <string name="notif_title">cforward relay</string>
+    <string name="notif_starting">starting…</string>
+    <string name="notif_stopped">stopped</string>
+    <string name="notif_stats">pool %1$d · verified %2$d · conns %3$d</string>
+
+    <string name="share_subject">cforward log</string>
+    <string name="share_chooser">Share cforward log</string>
+    <string name="log_empty">—</string>
+</resources>

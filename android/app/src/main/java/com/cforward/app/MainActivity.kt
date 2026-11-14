@@ -1,227 +1,110 @@
 package com.cforward.app
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.TextView
 import android.widget.Toast
-import org.json.JSONObject
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.cforward.app.databinding.ActivityMainBinding
+import kotlinx.coroutines.launch
 
 /**
  * Single-screen control panel for the cforward relay.
- * Polls the Go core's admin endpoint (127.0.0.1:18080/status) every 2 seconds.
+ * Rendering is driven by MainViewModel's UiState; this class only wires
+ * user actions (start/stop/apply/share) and maps state to views.
  */
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
-    private val handler = Handler(Looper.getMainLooper())
-
-    private val pill by lazy { findViewById<TextView>(R.id.pill_state) }
-    private val btnToggle by lazy { findViewById<Button>(R.id.btn_toggle) }
-    private val statPool by lazy { findViewById<TextView>(R.id.stat_pool) }
-    private val statVerified by lazy { findViewById<TextView>(R.id.stat_verified) }
-    private val statConns by lazy { findViewById<TextView>(R.id.stat_conns) }
-    private val statCfst by lazy { findViewById<TextView>(R.id.stat_cfst) }
-    private val topText by lazy { findViewById<TextView>(R.id.top_text) }
-    private val portInput by lazy { findViewById<EditText>(R.id.input_port) }
-    private val targetInput by lazy { findViewById<EditText>(R.id.input_target) }
-    private val poolMinInput by lazy { findViewById<EditText>(R.id.input_pool_min) }
-    private val ddCheck by lazy { findViewById<CheckBox>(R.id.check_dd) }
-    private val debugCheck by lazy { findViewById<CheckBox>(R.id.check_debug) }
-    private val btnApply by lazy { findViewById<Button>(R.id.btn_apply) }
-    private val btnShare by lazy { findViewById<TextView>(R.id.btn_share) }
-    private val logText by lazy { findViewById<TextView>(R.id.log_text) }
-    private val statListen by lazy { findViewById<TextView>(R.id.stat_listen) }
-    private val bootCheck by lazy { findViewById<CheckBox>(R.id.check_boot) }
-    private val btnBattery by lazy { findViewById<Button>(R.id.btn_battery) }
-
-    private var running = false
-
-    private val poller = object : Runnable {
-        override fun run() {
-            pollStatus()
-            pollLog()
-            handler.postDelayed(this, 2000)
-        }
-    }
+    private lateinit var binding: ActivityMainBinding
+    private val vm: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        val prefs = getSharedPreferences("cforward", MODE_PRIVATE)
-        portInput.setText(prefs.getInt("listen_port", 1234).toString())
-        targetInput.setText(prefs.getInt("target_port", 443).toString())
-        poolMinInput.setText(prefs.getInt("pool_min", 100).toString())
-        ddCheck.isChecked = prefs.getBoolean("cfst_dd", true)
-        debugCheck.isChecked = prefs.getBoolean("debug", false)
-        bootCheck.isChecked = prefs.getBoolean("start_on_boot", false)
+        loadSettings()
+        wireActions()
+        observeState()
+        requestNotificationPermissionIfNeeded()
+    }
 
-        btnToggle.setOnClickListener {
-            if (running) {
-                stopService(Intent(this, ForwardService::class.java))
-                setRunningUi(false)
-            } else {
-                saveSettings()
-                startForegroundService(Intent(this, ForwardService::class.java))
-                Toast.makeText(this, "Starting…", Toast.LENGTH_SHORT).show()
-            }
+    // ---- setup ----
+
+    private fun loadSettings() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        binding.inputPort.setText(prefs.getInt("listen_port", 1234).toString())
+        binding.inputTarget.setText(prefs.getInt("target_port", 443).toString())
+        binding.inputPoolMin.setText(prefs.getInt("pool_min", 100).toString())
+        binding.switchDd.isChecked = prefs.getBoolean("cfst_dd", true)
+        binding.switchDebug.isChecked = prefs.getBoolean("debug", false)
+        binding.switchBoot.isChecked = prefs.getBoolean("start_on_boot", false)
+    }
+
+    private fun wireActions() {
+        binding.btnToggle.setOnClickListener {
+            if (vm.state.value.running) stopRelay() else startRelay()
         }
-
-        btnApply.setOnClickListener {
+        binding.btnApply.setOnClickListener {
             saveSettings()
-            if (running) {
-                stopService(Intent(this, ForwardService::class.java))
-                startForegroundService(Intent(this, ForwardService::class.java))
-                Toast.makeText(this, "Settings applied, relay restarted", Toast.LENGTH_SHORT).show()
+            if (vm.state.value.running) {
+                stopRelay()
+                startRelay()
+                toast(getString(R.string.toast_settings_applied))
             } else {
-                Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
+                toast(getString(R.string.toast_settings_saved))
             }
         }
+        binding.btnBattery.setOnClickListener { requestBatteryExemption() }
+        binding.btnShare.setOnClickListener { shareLog() }
+    }
 
-        btnShare.setOnClickListener { shareLog() }
-        btnBattery.setOnClickListener { requestBatteryExemption() }
-
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+    private fun observeState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.state.collect { render(it) }
+            }
         }
-
-        setRunningUi(false)
     }
 
-    override fun onResume() {
-        super.onResume()
-        handler.post(poller)
+    // ---- actions ----
+
+    private fun startRelay() {
+        saveSettings()
+        ContextCompat.startForegroundService(this, Intent(this, ForwardService::class.java))
+        toast(getString(R.string.toast_starting))
     }
 
-    override fun onPause() {
-        super.onPause()
-        handler.removeCallbacks(poller)
+    private fun stopRelay() {
+        stopService(Intent(this, ForwardService::class.java))
     }
 
     private fun saveSettings() {
-        getSharedPreferences("cforward", MODE_PRIVATE).edit()
-            .putInt("listen_port", portInput.text.toString().toIntOrNull() ?: 1234)
-            .putInt("target_port", targetInput.text.toString().toIntOrNull() ?: 443)
-            .putInt("pool_min", poolMinInput.text.toString().toIntOrNull() ?: 100)
-            .putBoolean("cfst_dd", ddCheck.isChecked)
-            .putBoolean("debug", debugCheck.isChecked)
-            .putBoolean("start_on_boot", bootCheck.isChecked)
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt("listen_port", binding.inputPort.text.toString().toIntOrNull() ?: 1234)
+            .putInt("target_port", binding.inputTarget.text.toString().toIntOrNull() ?: 443)
+            .putInt("pool_min", binding.inputPoolMin.text.toString().toIntOrNull() ?: 100)
+            .putBoolean("cfst_dd", binding.switchDd.isChecked)
+            .putBoolean("debug", binding.switchDebug.isChecked)
+            .putBoolean("start_on_boot", binding.switchBoot.isChecked)
             .apply()
     }
 
-    // ---- UI state ----
-
-    private fun setRunningUi(r: Boolean) {
-        running = r
-        if (r) {
-            pill.text = "RUNNING"
-            pill.backgroundTintList = ColorStateList.valueOf(getColor(R.color.ok))
-            btnToggle.text = "Stop relay"
-            btnToggle.backgroundTintList = ColorStateList.valueOf(getColor(R.color.danger))
-        } else {
-            pill.text = "STOPPED"
-            pill.backgroundTintList = ColorStateList.valueOf(getColor(R.color.gray))
-            btnToggle.text = "Start relay"
-            btnToggle.backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
-            statPool.text = "—"
-            statVerified.text = "—"
-            statVerified.setTextColor(getColor(R.color.text))
-            statConns.text = "—"
-            statCfst.text = "—"
-            statListen.text = "127.0.0.1:" + getSharedPreferences("cforward", MODE_PRIVATE)
-                .getInt("listen_port", 1234)
-            topText.text = "—"
-        }
-        btnToggle.isEnabled = true
-    }
-
-    private fun applyStatus(j: JSONObject) {
-        val pool = j.getJSONObject("pool")
-        val cfst = j.getJSONObject("cfst")
-
-        setRunningUi(true)
-
-        statPool.text = String.format("%d IPs (min %d)", pool.getInt("size"), pool.getInt("min"))
-        val verified = pool.getInt("verified")
-        statVerified.text = verified.toString()
-        statVerified.setTextColor(getColor(if (verified > 0) R.color.ok else R.color.text))
-        statConns.text = j.getInt("active_conns").toString()
-        statCfst.text = if (cfst.getBoolean("running")) "running" else "idle"
-        statListen.text = j.optString("listen", "—")
-
-        val top = pool.getJSONArray("top")
-        val sb = StringBuilder()
-        if (top.length() == 0) {
-            sb.append("(pool empty, waiting for the first cfst round…)")
-        } else {
-            sb.append(String.format("%-3s %-16s %5s %6s %6s\n", "#", "IP", "score", "lat", "speed"))
-            val n = minOf(top.length(), 8)
-            for (i in 0 until n) {
-                val e = top.getJSONObject(i)
-                val mark = if (e.getBoolean("verified")) " *" else ""
-                sb.append(String.format("%-3d %-16s %5.1f %5.0fms %5.1fM%s\n",
-                    i + 1, e.getString("ip"), e.getDouble("score"),
-                    e.getDouble("lat"), e.getDouble("speed"), mark))
-            }
-            if (sb.toString().contains(" *")) {
-                sb.append("* = verified (served real traffic)")
-            }
-        }
-        topText.text = sb.toString()
-    }
-
-    // ---- data polling ----
-
-    private fun pollStatus() {
-        // Network on the UI thread is forbidden on Android, so use a background thread.
-        Thread {
-            try {
-                val conn = URL("http://127.0.0.1:18080/status").openConnection() as HttpURLConnection
-                conn.connectTimeout = 2000
-                conn.readTimeout = 2000
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val j = JSONObject(body)
-                runOnUiThread { applyStatus(j) }
-            } catch (e: Exception) {
-                runOnUiThread { setRunningUi(false) }
-            }
-        }.start()
-    }
-
-    private fun pollLog() {
-        if (logText.hasSelection()) return // don't disturb copying
-        val log = File(filesDir, "cforward.log")
-        if (!log.exists()) return
-        val lines = log.readLines()
-        if (lines.isEmpty()) return
-        val tail = lines.takeLast(40).joinToString("\n")
-        if (tail != logText.text.toString()) logText.text = tail
-    }
-
-    /** Asks the system to exempt this app from battery optimization (background survival). */
     private fun requestBatteryExemption() {
         val pm = getSystemService(PowerManager::class.java)
         if (pm != null && pm.isIgnoringBatteryOptimizations(packageName)) {
-            Toast.makeText(this, "Already battery-optimization exempt", Toast.LENGTH_SHORT).show()
+            toast(getString(R.string.toast_battery_already))
             return
         }
         try {
@@ -233,25 +116,121 @@ class MainActivity : Activity() {
             try {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             } catch (e2: Exception) {
-                Toast.makeText(this, "Open system settings → Battery manually", Toast.LENGTH_SHORT).show()
+                toast(getString(R.string.toast_battery_manual))
             }
         }
     }
 
-    /** Shares the relay log as plain text. */
     private fun shareLog() {
-        val log = File(filesDir, "cforward.log")
+        val log = java.io.File(filesDir, "cforward.log")
         val body = if (log.exists()) {
-            val lines = log.readLines()
-            if (lines.size > 300) lines.takeLast(300).joinToString("\n") else lines.joinToString("\n")
+            runCatching {
+                val lines = log.readLines()
+                if (lines.size > 300) lines.takeLast(300).joinToString("\n") else lines.joinToString("\n")
+            }.getOrDefault(getString(R.string.log_empty))
         } else {
-            "no log yet"
+            getString(R.string.log_empty)
         }
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "cforward log")
+            putExtra(Intent.EXTRA_SUBJECT, getString(R.string.share_subject))
             putExtra(Intent.EXTRA_TEXT, body)
         }
-        startActivity(Intent.createChooser(send, "Share cforward log"))
+        startActivity(Intent.createChooser(send, getString(R.string.share_chooser)))
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+    }
+
+    // ---- rendering ----
+
+    private fun render(s: UiState) {
+        renderPillAndButton(s.running)
+
+        val snap = s.snapshot
+        if (snap == null) {
+            renderStoppedStats()
+        } else {
+            renderStats(snap)
+            renderTop(snap)
+        }
+        renderLog(s.logTail)
+    }
+
+    private fun renderPillAndButton(running: Boolean) {
+        if (running) {
+            binding.pillState.text = getString(R.string.status_running)
+            binding.pillState.backgroundTintList = ColorStateList.valueOf(color(R.color.ok))
+            binding.btnToggle.text = getString(R.string.btn_stop)
+            binding.btnToggle.backgroundTintList = ColorStateList.valueOf(color(R.color.error))
+        } else {
+            binding.pillState.text = getString(R.string.status_stopped)
+            binding.pillState.backgroundTintList = ColorStateList.valueOf(color(R.color.gray))
+            binding.btnToggle.text = getString(R.string.btn_start)
+            binding.btnToggle.backgroundTintList = ColorStateList.valueOf(color(R.color.brand))
+        }
+    }
+
+    private fun renderStoppedStats() {
+        val dash = getString(R.string.value_dash)
+        binding.statPool.text = dash
+        binding.statVerified.text = dash
+        binding.statVerified.setTextColor(color(R.color.on_surface))
+        binding.statConns.text = dash
+        binding.statCfst.text = dash
+        val port = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("listen_port", 1234)
+        binding.statListen.text = "127.0.0.1:$port"
+        binding.topText.text = dash
+    }
+
+    private fun renderStats(snap: StatusSnapshot) {
+        binding.statPool.text = getString(R.string.pool_format, snap.poolSize, snap.poolMin)
+        binding.statVerified.text = snap.verified.toString()
+        binding.statVerified.setTextColor(color(if (snap.verified > 0) R.color.ok else R.color.on_surface))
+        binding.statConns.text = snap.conns.toString()
+        binding.statCfst.text =
+            getString(if (snap.cfstRunning) R.string.cfst_running else R.string.cfst_idle)
+        binding.statListen.text = snap.listen.ifEmpty { getString(R.string.value_dash) }
+    }
+
+    private fun renderTop(snap: StatusSnapshot) {
+        if (snap.top.isEmpty()) {
+            binding.topText.text = getString(R.string.top_empty)
+            return
+        }
+        val sb = StringBuilder(getString(R.string.top_header))
+        var anyVerified = false
+        for ((i, e) in snap.top.take(8).withIndex()) {
+            if (e.verified) anyVerified = true
+            sb.append(
+                String.format(
+                    "%-3d %-16s %6.1f %5.0fms %5.1fM%s\n",
+                    i + 1, e.ip, e.score, e.lat, e.speed, if (e.verified) " *" else ""
+                )
+            )
+        }
+        if (anyVerified) sb.append(getString(R.string.verified_legend))
+        binding.topText.text = sb.toString()
+    }
+
+    private fun renderLog(tail: String) {
+        if (binding.logText.hasSelection()) return // don't disturb copying
+        val text = tail.ifEmpty { getString(R.string.log_empty) }
+        if (text != binding.logText.text.toString()) binding.logText.text = text
+    }
+
+    // ---- helpers ----
+
+    private fun color(id: Int): Int = ContextCompat.getColor(this, id)
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    companion object {
+        private const val PREFS = "cforward"
     }
 }

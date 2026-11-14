@@ -50,7 +50,7 @@ class ForwardService : Service() {
             // Android 14+ (API 34) REQUIRES startForeground with a foreground
             // service type matching the manifest, otherwise the app crashes with
             // MissingForegroundServiceTypeException.
-            val initial = buildNotification("starting…")
+            val initial = buildNotification(getString(R.string.notif_starting))
             when {
                 Build.VERSION.SDK_INT >= 34 ->
                     startForeground(NOTIF_ID, initial, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -87,7 +87,7 @@ class ForwardService : Service() {
         )
         return Notification.Builder(this, "cforward")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("cforward relay")
+            .setContentTitle(getString(R.string.notif_title))
             .setContentText(text)
             .setContentIntent(pi)
             .setOngoing(true)
@@ -124,9 +124,12 @@ class ForwardService : Service() {
             conn.disconnect()
             val j = JSONObject(body)
             val p = j.getJSONObject("pool")
-            "pool ${p.getInt("size")} · verified ${p.getInt("verified")} · conns ${j.getInt("active_conns")}"
+            getString(
+                R.string.notif_stats,
+                p.getInt("size"), p.getInt("verified"), j.getInt("active_conns")
+            )
         } catch (e: Exception) {
-            if (process?.isAlive == true) "starting…" else "stopped"
+            if (process?.isAlive == true) getString(R.string.notif_starting) else getString(R.string.notif_stopped)
         }
     }
 
